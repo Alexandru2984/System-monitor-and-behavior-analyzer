@@ -139,7 +139,11 @@ void SqliteStorage::store(const MetricSnapshot& snapshot) {
 
     // Wrap in a transaction → all inserts from one snapshot are atomic
     // and much faster (SQLite would otherwise commit per-INSERT).
+    //
+    // If BEGIN itself fails, there's no active transaction to roll back,
+    // so we let exec() throw directly without entering the try block.
     exec("BEGIN TRANSACTION;");
+    bool committed = false;
     try {
         std::visit([this](const auto& s) {
             using T = std::decay_t<decltype(s)>;
@@ -153,8 +157,12 @@ void SqliteStorage::store(const MetricSnapshot& snapshot) {
                 storeNetwork(s);
         }, snapshot);
         exec("COMMIT;");
+        committed = true;
     } catch (...) {
-        exec("ROLLBACK;");
+        if (!committed) {
+            // Only rollback if we have an active transaction
+            try { exec("ROLLBACK;"); } catch (...) {}
+        }
         throw;
     }
 }

@@ -179,11 +179,11 @@ private:
     }
 
     void pollProcesses(sqlite3* db) {
-        // Get the latest timestamp's processes, sorted by CPU%
+        // No ORDER BY — the UI sorts client-side via ImGui sort specs.
         const char* sql = "SELECT pid, name, user, state, cpu_pct, mem_pct "
                          "FROM process_snapshots WHERE timestamp = "
                          "(SELECT MAX(timestamp) FROM process_snapshots) "
-                         "ORDER BY cpu_pct DESC LIMIT 50;";
+                         "LIMIT 50;";
         sqlite3_stmt* stmt;
         sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
 
@@ -220,8 +220,18 @@ private:
         }
         sqlite3_finalize(stmt);
 
-        // Compute current risk from most recent anomalies
-        risk_score = anomalies.empty() ? 0.0 : anomalies.front().risk_score;
+        // Compute composite risk: time-weighted sum of recent anomalies.
+        // Recent anomalies contribute more; older ones decay exponentially.
+        // Capped at 100 to match the UI's 0–100 scale.
+        risk_score = 0.0;
+        constexpr double decay = 0.7;  // per-event decay factor
+        double weight = 1.0;
+        for (const auto& a : anomalies) {
+            risk_score += a.severity * 25.0 * weight;  // severity ∈ [0,1] → 0–25 per event
+            weight *= decay;
+            if (weight < 0.01) break;
+        }
+        risk_score = std::min(risk_score, 100.0);
     }
 };
 
