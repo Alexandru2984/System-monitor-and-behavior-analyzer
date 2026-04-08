@@ -1,0 +1,15 @@
+{
+    "cpu_interval_ms": 1000,
+    "memory_interval_ms": 1000,
+    "process_interval_ms": 5000,
+    "network_interval_ms": 2000,
+
+    "db_path": "sysmonitor.db",
+    "retention_hours": 24,
+
+    "anomaly_sigma": 2.0,
+    "ema_alpha": 0.1,
+
+    "log_file": "sysmonitor.log",
+    "log_level": "info"
+}

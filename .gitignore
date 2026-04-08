@@ -1,0 +1,27 @@
+# Build
+build/
+cmake-build-*/
+
+# IDE / Editor
+.idea/
+.vscode/
+.cache/
+*.swp
+*~
+.DS_Store
+
+# clangd / LSP
+compile_commands.json
+.clangd
+
+# Runtime files
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Compiled objects
+*.o
+*.a
+*.so
+*.out

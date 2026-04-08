@@ -1,0 +1,17 @@
+# ── Unit Tests ────────────────────────────────────────────────────────────────
+
+# Helper function: add a test executable linked to our lib + gtest
+function(add_sysmonitor_test TEST_NAME TEST_SRC)
+    add_executable(${TEST_NAME} ${TEST_SRC})
+    target_link_libraries(${TEST_NAME} PRIVATE
+        sysmonitor_lib
+        GTest::gtest_main
+    )
+    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+endfunction()
+
+add_sysmonitor_test(test_cpu_collector    test_cpu_collector.cpp)
+add_sysmonitor_test(test_memory_collector test_memory_collector.cpp)
+add_sysmonitor_test(test_baseline_calculator test_baseline_calculator.cpp)
+add_sysmonitor_test(test_sqlite_storage   test_sqlite_storage.cpp)
+add_sysmonitor_test(test_anomaly_detector test_anomaly_detector.cpp)
