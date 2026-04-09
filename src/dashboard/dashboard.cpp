@@ -27,6 +27,9 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <fstream>
+#include <unistd.h>
+#include <cmath>
 
 // ── Color palette (dark theme accent colors) ────────────────────────────────
 static const ImVec4 kAccentCyan   = ImVec4(0.0f, 0.83f, 0.95f, 1.0f);
@@ -49,6 +52,28 @@ struct RollingBuffer {
     bool empty() const { return data.empty(); }
     double back() const { return data.empty() ? 0.0 : data.back(); }
 };
+
+// ── Stress test ─────────────────────────────────────────────────────────────
+static std::atomic<bool> g_is_stressing{false};
+static void startStressTest() {
+    if (g_is_stressing) return;
+    g_is_stressing = true;
+    for (int i = 0; i < 4; ++i) {
+        std::thread([]{
+            auto start = std::chrono::steady_clock::now();
+            while (std::chrono::steady_clock::now() - start < std::chrono::seconds(20)) {
+                volatile uint64_t x = 1;
+                for (int j = 0; j < 10000; ++j) {
+                    x = (x * 1103515245 + 12345) % 2147483648;
+                }
+            }
+        }).detach();
+    }
+    std::thread([]{
+        std::this_thread::sleep_for(std::chrono::seconds(20));
+        g_is_stressing = false;
+    }).detach();
+}
 
 // ── Process table entry ─────────────────────────────────────────────────────
 struct ProcEntry {
@@ -88,6 +113,104 @@ struct AnalysisEventEntry {
     double risk_total;
     std::string explanation;
 };
+
+// ── Export functions ────────────────────────────────────────────────────────
+static std::string saveFileDialog(const std::string& default_name, const std::string& ext) {
+    char cwd_buf[1024];
+    std::string pwd = "";
+    if (getcwd(cwd_buf, sizeof(cwd_buf))) {
+        pwd = std::string(cwd_buf) + "/";
+    }
+
+    std::string filepath = pwd + default_name;
+    
+    // Create an empty dummy file so Zenity/GTK populates the 'Name' field correctly
+    { std::ofstream out(filepath); }
+
+    std::string cmd = "zenity --file-selection --save --confirm-overwrite "
+                      "--title=\"Export Data\" "
+                      "--filename=\"" + filepath + "\" "
+                      "--file-filter=\"" + ext + " files | *." + ext + "\" 2>/dev/null";
+                      
+    std::string result;
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (pipe) {
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            result += buffer;
+        }
+        pclose(pipe);
+    }
+    
+    // Clean up our dummy file (it will be overwritten later if the user actually clicked Save)
+    unlink(filepath.c_str());
+
+    if (!result.empty() && result.back() == '\n') result.pop_back();
+
+    // Ensure it has the right extension if the user just typed a name
+    if (!result.empty()) {
+        std::string expected_ext = "." + ext;
+        if (result.size() < expected_ext.size() || 
+            result.substr(result.size() - expected_ext.size()) != expected_ext) {
+            result += expected_ext;
+        }
+    }
+
+    return result;
+}
+
+static std::string getCurrentTimestampString() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    struct tm tm_buf;
+    localtime_r(&t, &tm_buf);
+    char buf[64];
+    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm_buf);
+    return std::string(buf);
+}
+
+static void exportDataToCSV(std::vector<ProcEntry> procs) {
+    std::thread([procs = std::move(procs)]() {
+        std::string filename = "resources_" + getCurrentTimestampString() + ".csv";
+        std::string filepath = saveFileDialog(filename, "csv");
+        if (filepath.empty()) return;
+
+        if (std::ofstream os{filepath}) {
+            os << "PID,Name,User,State,CPU%,MEM%\n";
+            for (const auto& p : procs) {
+                os << p.pid << "," << p.name << "," << p.user << "," 
+                   << p.state << "," << p.cpu_pct << "," << p.mem_pct << "\n";
+            }
+        }
+    }).detach();
+}
+
+static void exportReportsToTXT(std::vector<AnalysisEventEntry> events) {
+    std::thread([events = std::move(events)]() {
+        std::string filename = "reports_" + getCurrentTimestampString() + ".txt";
+        std::string filepath = saveFileDialog(filename, "txt");
+        if (filepath.empty()) return;
+
+        if (std::ofstream os{filepath}) {
+            os << "==========================================\n";
+            os << "       SYSTEM MONITOR ANALYSIS REPORTS    \n";
+            os << "==========================================\n\n";
+            for (const auto& ev : events) {
+                std::time_t t = ev.timestamp;
+                struct tm tm_buf;
+                localtime_r(&t, &tm_buf);
+                char time_str[32];
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
+
+                os << "Time: " << time_str << "\n";
+                os << "Risk Score: " << ev.risk_total << " (" << ev.anomaly_count 
+                   << " anomalies, " << ev.pattern_count << " patterns)\n";
+                os << "------------------------------------------\n";
+                os << ev.explanation << "\n\n";
+            }
+        }
+    }).detach();
+}
 
 // ── Data source: polls SQLite DB ────────────────────────────────────────────
 class DashboardData {
@@ -460,6 +583,27 @@ int main(int argc, char* argv[]) {
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentCyan);
             ImGui::Text("> SYSTEM MONITOR");
             ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            if (g_is_stressing) {
+                ImGui::BeginDisabled();
+                ImGui::Button("Stressing CPU...");
+                ImGui::EndDisabled();
+            } else {
+                if (ImGui::Button("Simulate CPU Load")) {
+                    startStressTest();
+                }
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Export Data")) {
+                exportDataToCSV(data.processes);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Export Reports")) {
+                exportReportsToTXT(data.analysis_events);
+            }
+
             ImGui::SameLine(ImGui::GetContentRegionAvail().x - 280);
 
             // Risk score badge
