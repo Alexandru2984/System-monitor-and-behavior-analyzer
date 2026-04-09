@@ -551,17 +551,35 @@ int main(int argc, char* argv[]) {
 
     // ── Data source ────────────────────────────────────────────────────────
     DashboardData data(db_path);
-    auto last_poll = std::chrono::steady_clock::now();
+
+    std::mutex data_mutex;
+    std::atomic<bool> run_poller{true};
+    std::atomic<bool> data_updated{false};
+
+    std::thread poller([&]() {
+        DashboardData local_data(db_path);
+        while (run_poller) {
+            local_data.poll();
+            {
+                std::lock_guard<std::mutex> lock(data_mutex);
+                data = local_data;
+                data_updated = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    });
+
+    DashboardData render_data(db_path);
 
     // ── Main loop ──────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // Poll DB every 500ms
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_poll).count() > 500) {
-            data.poll();
-            last_poll = now;
+        // ── Grab fresh data if available ───────────────────────────────────
+        if (data_updated) {
+            std::lock_guard<std::mutex> lock(data_mutex);
+            render_data = data;
+            data_updated = false;
         }
 
         ImGui_ImplOpenGL3_NewFrame();
@@ -597,20 +615,20 @@ int main(int argc, char* argv[]) {
 
             ImGui::SameLine();
             if (ImGui::Button("Export Data")) {
-                exportDataToCSV(data.processes);
+                exportDataToCSV(render_data.processes);
             }
             ImGui::SameLine();
             if (ImGui::Button("Export Reports")) {
-                exportReportsToTXT(data.analysis_events);
+                exportReportsToTXT(render_data.analysis_events);
             }
 
             ImGui::SameLine(ImGui::GetContentRegionAvail().x - 280);
 
             // Risk score badge
-            ImVec4 risk_col = data.risk_score < 10 ? kAccentGreen :
-                              data.risk_score < 40 ? kAccentOrange : kAccentRed;
+            ImVec4 risk_col = render_data.risk_score < 10 ? kAccentGreen :
+                              render_data.risk_score < 40 ? kAccentOrange : kAccentRed;
             ImGui::PushStyleColor(ImGuiCol_Text, risk_col);
-            ImGui::Text("RISK: %.0f/100", data.risk_score);
+            ImGui::Text("RISK: %.0f/100", render_data.risk_score);
             ImGui::PopStyleColor();
 
             ImGui::SameLine();
@@ -618,12 +636,12 @@ int main(int argc, char* argv[]) {
             ImGui::SameLine();
 
             // Quick stats
-            if (!data.cpu_total.empty()) {
-                ImGui::Text("CPU: %.0f%%", data.cpu_total.back());
+            if (!render_data.cpu_total.empty()) {
+                ImGui::Text("CPU: %.0f%%", render_data.cpu_total.back());
             }
             ImGui::SameLine();
-            if (!data.mem_usage.empty()) {
-                ImGui::Text("RAM: %.0f%%", data.mem_usage.back());
+            if (!render_data.mem_usage.empty()) {
+                ImGui::Text("RAM: %.0f%%", render_data.mem_usage.back());
             }
 
             ImGui::Separator();
@@ -1007,6 +1025,9 @@ int main(int argc, char* argv[]) {
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    run_poller = false;
+    if (poller.joinable()) poller.join();
 
     return 0;
 }

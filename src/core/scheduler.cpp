@@ -10,11 +10,10 @@
 
 namespace sysmon {
 
-Scheduler::Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config,
-                     sqlite3* db)
+Scheduler::Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config)
     : storage_(std::move(storage))
     , config_(config)
-    , analyzer_(db, config.anomaly_sigma)
+    , analyzer_(config.db_path, config.anomaly_sigma, config.ema_alpha)
 {}
 
 void Scheduler::addCollector(std::shared_ptr<ICollector> collector,

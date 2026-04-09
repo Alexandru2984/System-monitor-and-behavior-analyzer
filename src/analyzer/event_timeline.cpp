@@ -9,7 +9,12 @@
 
 namespace sysmon {
 
-EventTimeline::EventTimeline(sqlite3* db) : db_(db) {}
+EventTimeline::EventTimeline(const std::string& db_path)
+    : db_path_(db_path) {}
+
+EventTimeline::~EventTimeline() {
+    if (db_) sqlite3_close(db_);
+}
 
 void EventTimeline::exec(const char* sql) {
     char* err = nullptr;
@@ -21,6 +26,15 @@ void EventTimeline::exec(const char* sql) {
 }
 
 void EventTimeline::initialize() {
+    int rc = sqlite3_open(db_path_.c_str(), &db_);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("EventTimeline cannot open SQLite DB: " + db_path_);
+    }
+    sqlite3_busy_timeout(db_, 5000); // 5 sec timeout for WAL busy writers
+
+    exec("PRAGMA journal_mode=WAL;");
+    exec("PRAGMA synchronous=NORMAL;");
+
     exec(R"SQL(
         CREATE TABLE IF NOT EXISTS analysis_events (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +67,8 @@ void EventTimeline::record(const AnalysisReport& report) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     bool has_anomalies = !report.anomalies.empty();
+    bool has_patterns = !report.patterns.empty();
+    bool has_events = has_anomalies || has_patterns;
 
     // If there are anomalies, open or extend an incident
     if (has_anomalies) {
@@ -60,8 +76,14 @@ void EventTimeline::record(const AnalysisReport& report) {
     } else if (active_incident_id_ >= 0 &&
                report.timestamp - last_anomaly_ts_ > INCIDENT_GAP_MS) {
         // No anomalies and gap exceeded → close incident
-        closeActiveIncident(last_anomaly_ts_);
+        closeActiveIncident(report.timestamp);
     }
+
+    // Throttle empty events to 1 every 5 seconds to prevent DB/UI spam
+    if (!has_events && (report.timestamp - last_heartbeat_ts_ < 5000)) {
+        return;
+    }
+    if (!has_events) last_heartbeat_ts_ = report.timestamp;
 
     // Insert event
     const char* sql = "INSERT INTO analysis_events "

@@ -14,7 +14,8 @@ namespace sysmon {
 
 class EventTimeline {
 public:
-    explicit EventTimeline(sqlite3* db);
+    explicit EventTimeline(const std::string& db_path);
+    ~EventTimeline();
 
     /// Create the events & incidents tables
     void initialize();
@@ -32,12 +33,14 @@ public:
     std::vector<AnalysisReport> getRecentEvents(int limit = 20);
 
 private:
-    sqlite3* db_;
+    sqlite3* db_ = nullptr;
+    std::string db_path_;
     std::mutex mutex_;
 
     // Incident management
     int64_t active_incident_id_ = -1;
     int64_t last_anomaly_ts_ = 0;
+    int64_t last_heartbeat_ts_ = 0;
 
     // Gap threshold: if no anomalies for this long, close the incident
     static constexpr int64_t INCIDENT_GAP_MS = 30'000;  // 30 seconds

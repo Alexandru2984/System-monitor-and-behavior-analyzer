@@ -31,8 +31,7 @@ namespace sysmon {
 
 class Scheduler {
 public:
-    Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config,
-              sqlite3* db);
+    Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config);
 
     /// Register a collector with its sampling interval.
     void addCollector(std::shared_ptr<ICollector> collector,

@@ -104,6 +104,9 @@ private:
 /// Manages baselines for all metrics by name
 class BaselineManager {
 public:
+    BaselineManager(double short_alpha = 0.15, double long_alpha = 0.05)
+        : short_alpha_(short_alpha), long_alpha_(long_alpha) {}
+
     /// Feed a metric value
     void update(const std::string& metric_name, double value);
 
@@ -114,6 +117,8 @@ public:
     bool has(const std::string& metric_name) const;
 
 private:
+    double short_alpha_;
+    double long_alpha_;
     std::unordered_map<std::string, MetricBaseline> baselines_;
     // Dummy for const access to non-existent metrics
     static const MetricBaseline kEmpty;

@@ -11,14 +11,16 @@
 #include "core/types.h"
 
 #include <memory>
+#include <mutex>
+#include <string>
 
 namespace sysmon {
 
 class Analyzer {
 public:
-    /// @param db         Shared SQLite handle (for EventTimeline)
+    /// @param db_path    Path to SQLite DB (Timeline opens its own connection)
     /// @param sigma      Sigma threshold for anomaly detection
-    explicit Analyzer(sqlite3* db, double sigma_threshold = 2.0);
+    explicit Analyzer(const std::string& db_path, double sigma_threshold = 2.0, double ema_alpha = 0.05);
 
     /// Analyze a metric snapshot: detect anomalies, patterns, compute risk,
     /// generate explanation, record in timeline.
@@ -36,6 +38,7 @@ private:
     RiskEngine risk_engine_;
     EventTimeline timeline_;
 
+    std::mutex analyze_mutex_;
     double sigma_threshold_;
 
     // Anomaly detection using baselines (replaces old AnomalyDetector)

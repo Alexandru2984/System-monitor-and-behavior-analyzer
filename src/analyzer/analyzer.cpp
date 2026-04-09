@@ -10,14 +10,16 @@
 
 namespace sysmon {
 
-Analyzer::Analyzer(sqlite3* db, double sigma_threshold)
-    : timeline_(db)
+Analyzer::Analyzer(const std::string& db_path, double sigma_threshold, double ema_alpha)
+    : baselines_(ema_alpha * 3.0, ema_alpha)
+    , timeline_(db_path)
     , sigma_threshold_(sigma_threshold)
 {
     timeline_.initialize();
 }
 
 AnalysisReport Analyzer::analyze(const MetricSnapshot& snapshot) {
+    std::lock_guard<std::mutex> lock(analyze_mutex_);
     AnalysisReport report;
 
     // Extract timestamp from any snapshot type
@@ -86,7 +88,7 @@ std::vector<AnomalyEvent> Analyzer::checkCpu(const CpuSnapshot& s) {
         if (s.total_usage_percent > threshold) {
             double effective_sigma = std::max(lw.sigma, 1.0);
             double severity = std::min(1.0,
-                (s.total_usage_percent - lw.mean) / (effective_sigma * 4.0));
+                (s.total_usage_percent - lw.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
                 .timestamp = s.timestamp,
@@ -115,7 +117,7 @@ std::vector<AnomalyEvent> Analyzer::checkMemory(const MemorySnapshot& s) {
         if (s.usage_percent > threshold) {
             double effective_sigma = std::max(lw.sigma, 1.0);
             double severity = std::min(1.0,
-                (s.usage_percent - lw.mean) / (effective_sigma * 4.0));
+                (s.usage_percent - lw.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
                 .timestamp = s.timestamp,
@@ -146,11 +148,12 @@ std::vector<AnomalyEvent> Analyzer::checkNetwork(const NetworkSnapshot& s) {
     auto& bl_rx = baselines_.get("net_rx");
     auto lw_rx = bl_rx.longWindow();
 
-    if (lw_rx.ready && lw_rx.count > 10 && lw_rx.sigma > 0) {
-        double threshold = bl_rx.anomalyThreshold(sigma_threshold_);
+    if (lw_rx.ready && lw_rx.count > 10) {
+        double threshold = bl_rx.anomalyThreshold(sigma_threshold_, 100.0);
         if (total_rx > threshold) {
+            double effective_sigma = std::max(lw_rx.sigma, 100.0);
             double severity = std::min(1.0,
-                (total_rx - lw_rx.mean) / (lw_rx.sigma * 4.0));
+                (total_rx - lw_rx.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
                 .timestamp = s.timestamp,
@@ -167,11 +170,12 @@ std::vector<AnomalyEvent> Analyzer::checkNetwork(const NetworkSnapshot& s) {
     auto& bl_tx = baselines_.get("net_tx");
     auto lw_tx = bl_tx.longWindow();
 
-    if (lw_tx.ready && lw_tx.count > 10 && lw_tx.sigma > 0) {
-        double threshold = bl_tx.anomalyThreshold(sigma_threshold_);
+    if (lw_tx.ready && lw_tx.count > 10) {
+        double threshold = bl_tx.anomalyThreshold(sigma_threshold_, 100.0);
         if (total_tx > threshold) {
+            double effective_sigma = std::max(lw_tx.sigma, 100.0);
             double severity = std::min(1.0,
-                (total_tx - lw_tx.mean) / (lw_tx.sigma * 4.0));
+                (total_tx - lw_tx.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
                 .timestamp = s.timestamp,

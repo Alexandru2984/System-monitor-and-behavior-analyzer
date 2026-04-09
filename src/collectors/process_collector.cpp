@@ -42,6 +42,8 @@ MetricSnapshot ProcessCollector::collect() {
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
 
+    std::unordered_map<int, ProcTimes> new_times;
+
     uint64_t total_mem_kb = totalMemoryKb();
     long page_size_kb = sysconf(_SC_PAGESIZE) / 1024;
 
@@ -131,7 +133,7 @@ MetricSnapshot ProcessCollector::collect() {
                 cpu_pct = (delta_cpu_ms / static_cast<double>(delta_time_ms)) * 100.0;
             }
         }
-        prev_times_[ipid] = {utime, stime, snap.timestamp};
+        new_times[ipid] = {utime, stime, snap.timestamp};
 
         // ── Compute memory% ────────────────────────────────────────────────
         double mem_pct = 0.0;
@@ -153,6 +155,8 @@ MetricSnapshot ProcessCollector::collect() {
     }
 
     closedir(proc_dir);
+    
+    prev_times_ = std::move(new_times);
 
     LOG_DEBUG("Processes: {} total", snap.processes.size());
     return snap;

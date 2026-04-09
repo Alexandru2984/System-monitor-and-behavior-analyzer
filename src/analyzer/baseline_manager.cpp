@@ -20,6 +20,17 @@ MetricBaseline::MetricBaseline(size_t short_window, size_t long_window,
 }
 
 void MetricBaseline::update(double value) {
+    // ── Sustained high tracking ───────────────────────────────────────────
+    // Must compute P95 BEFORE adding value to pctl_buf or EMA (avoids self-contamination)
+    {
+        double prev_p95 = longWindow().p95;
+        if (long_count_ > 20 && value > prev_p95) {
+            consecutive_above_p95_++;
+        } else {
+            consecutive_above_p95_ = 0;
+        }
+    }
+
     // ── Short window (buffered) ───────────────────────────────────────────
     short_buf_.push_back(value);
     while (short_buf_.size() > short_max_) short_buf_.pop_front();
@@ -47,16 +58,6 @@ void MetricBaseline::update(double value) {
     long_max_ = std::max(long_max_, value);
     long_count_++;
 
-    // ── Sustained high tracking ───────────────────────────────────────────
-    // Must compute P95 BEFORE adding value to pctl_buf (avoids self-contamination)
-    {
-        double prev_p95 = longWindow().p95;
-        if (long_count_ > 20 && value > prev_p95) {
-            consecutive_above_p95_++;
-        } else {
-            consecutive_above_p95_ = 0;
-        }
-    }
 
     // ── Percentile buffer ─────────────────────────────────────────────────
     pctl_buf_.push_back(value);
@@ -185,11 +186,15 @@ bool MetricBaseline::isMonotonicallyIncreasing(int samples) const {
 const MetricBaseline BaselineManager::kEmpty{};
 
 void BaselineManager::update(const std::string& metric_name, double value) {
-    baselines_[metric_name].update(value);
+    get(metric_name).update(value);
 }
 
 MetricBaseline& BaselineManager::get(const std::string& metric_name) {
-    return baselines_[metric_name];
+    auto it = baselines_.find(metric_name);
+    if (it == baselines_.end()) {
+        it = baselines_.emplace(metric_name, MetricBaseline(60, 600, short_alpha_, long_alpha_)).first;
+    }
+    return it->second;
 }
 
 const MetricBaseline& BaselineManager::get(const std::string& metric_name) const {
