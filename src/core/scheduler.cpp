@@ -10,10 +10,11 @@
 
 namespace sysmon {
 
-Scheduler::Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config)
+Scheduler::Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config,
+                     sqlite3* db)
     : storage_(std::move(storage))
     , config_(config)
-    , detector_(config.anomaly_sigma, config.ema_alpha)
+    , analyzer_(db, config.anomaly_sigma)
 {}
 
 void Scheduler::addCollector(std::shared_ptr<ICollector> collector,
@@ -61,8 +62,6 @@ void Scheduler::collectionLoop(std::stop_token stop_token, ScheduledTask task) {
     LOG_INFO("{}: collection thread started", task.collector->name());
 
     // We use a condition_variable to enable interruptible sleep.
-    // Without this, the thread would sleep for the full interval even after
-    // stop is requested (bad for fast shutdown).
     std::mutex mtx;
     std::condition_variable_any cv;
 
@@ -74,11 +73,10 @@ void Scheduler::collectionLoop(std::stop_token stop_token, ScheduledTask task) {
             // ── Store ──────────────────────────────────────────────────────
             storage_->store(snapshot);
 
-            // ── Analyze ────────────────────────────────────────────────────
-            auto anomalies = detector_.process(snapshot);
-            if (!anomalies.empty()) {
-                scorer_.score(anomalies);
-                for (const auto& a : anomalies) {
+            // ── Analyze (replaces old detector_ + scorer_) ─────────────────
+            auto report = analyzer_.analyze(snapshot);
+            if (!report.anomalies.empty()) {
+                for (const auto& a : report.anomalies) {
                     storage_->storeAnomaly(a);
                 }
             }

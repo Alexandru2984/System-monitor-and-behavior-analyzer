@@ -74,7 +74,7 @@ int main(int argc, char* argv[]) {
     auto network_collector = std::make_shared<sysmon::NetworkCollector>();
 
     // ── 4. Create scheduler and register collectors ────────────────────────
-    sysmon::Scheduler scheduler(storage, cfg);
+    sysmon::Scheduler scheduler(storage, cfg, storage->db());
     scheduler.addCollector(cpu_collector,     cfg.cpu_interval);
     scheduler.addCollector(memory_collector,  cfg.memory_interval);
     scheduler.addCollector(process_collector, cfg.process_interval);

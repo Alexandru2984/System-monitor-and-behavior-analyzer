@@ -86,4 +86,52 @@ struct AnomalyEvent {
     double risk_score;         // 0 – 100 composite
 };
 
+// ── Pattern types (detected by the Analyzer module) ────────────────────────
+enum class PatternType {
+    SustainedHighLoad,   // Value above P95 for N consecutive samples
+    Oscillation,         // Crossing mean >K times in a window (thrashing)
+    Trend,               // Linear regression slope exceeds threshold
+    MemoryLeak,          // Monotonically increasing memory over long window
+    NewProcess,          // A process appeared that wasn't in previous snapshot
+    DisappearedProcess,  // A process disappeared unexpectedly
+};
+
+struct PatternEvent {
+    int64_t timestamp;
+    PatternType type;
+    std::string metric_type;   // which metric triggered this
+    std::string description;   // human-readable
+    double confidence;         // 0.0 – 1.0
+};
+
+// ── Risk breakdown (multi-factor scoring) ──────────────────────────────────
+struct RiskBreakdown {
+    double severity_score   = 0.0;   // raw statistical deviation (weight: 30)
+    double persistence_score = 0.0;  // how long the anomaly persists (weight: 25)
+    double breadth_score    = 0.0;   // how many metrics are anomalous (weight: 20)
+    double recency_score    = 0.0;   // time-decayed weight (weight: 15)
+    double familiarity_score = 0.0;  // seen before → lower risk (weight: 10)
+    double total             = 0.0;  // composite [0..100]
+};
+
+// ── Analysis report (full output of one analyze() call) ────────────────────
+struct AnalysisReport {
+    int64_t timestamp;
+    std::vector<AnomalyEvent> anomalies;
+    std::vector<PatternEvent> patterns;
+    std::string explanation;         // human-readable multi-line report
+    RiskBreakdown risk;
+};
+
+// ── Incident (group of correlated events within a time window) ─────────────
+struct Incident {
+    int64_t id;
+    int64_t start_time;
+    int64_t end_time;
+    std::string summary;
+    double peak_risk;
+    int event_count;
+    bool is_active;
+};
+
 } // namespace sysmon

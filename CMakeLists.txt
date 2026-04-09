@@ -36,6 +36,12 @@ add_library(sysmonitor_lib STATIC
     src/analysis/baseline_calculator.cpp
     src/analysis/anomaly_detector.cpp
     src/analysis/risk_scorer.cpp
+    src/analyzer/baseline_manager.cpp
+    src/analyzer/pattern_detector.cpp
+    src/analyzer/explainer.cpp
+    src/analyzer/risk_engine.cpp
+    src/analyzer/event_timeline.cpp
+    src/analyzer/analyzer.cpp
     src/core/scheduler.cpp
     src/core/config.cpp
 )

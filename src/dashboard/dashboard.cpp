@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <deque>
 #include <string>
 #include <vector>
@@ -68,6 +69,26 @@ struct AnomalyEntry {
     double risk_score;
 };
 
+// ── Incident entry (from Analyzer) ──────────────────────────────────────────
+struct IncidentEntry {
+    int64_t id;
+    int64_t start_time;
+    int64_t end_time;
+    std::string summary;
+    double peak_risk;
+    int event_count;
+    bool is_active;
+};
+
+// ── Analysis event entry ────────────────────────────────────────────────────
+struct AnalysisEventEntry {
+    int64_t timestamp;
+    int anomaly_count;
+    int pattern_count;
+    double risk_total;
+    std::string explanation;
+};
+
 // ── Data source: polls SQLite DB ────────────────────────────────────────────
 class DashboardData {
 public:
@@ -84,6 +105,8 @@ public:
         pollNetwork(db);
         pollProcesses(db);
         pollAnomalies(db);
+        pollIncidents(db);
+        pollAnalysisEvents(db);
 
         sqlite3_close(db);
     }
@@ -99,6 +122,8 @@ public:
 
     std::vector<ProcEntry> processes;
     std::vector<AnomalyEntry> anomalies;
+    std::vector<IncidentEntry> incidents;
+    std::vector<AnalysisEventEntry> analysis_events;
 
     double risk_score = 0.0;
     int64_t last_cpu_ts_ = 0;
@@ -233,6 +258,51 @@ private:
         }
         risk_score = std::min(risk_score, 100.0);
     }
+
+    void pollIncidents(sqlite3* db) {
+        const char* sql = "SELECT id, start_time, end_time, summary, peak_risk, "
+                         "event_count, is_active FROM incidents "
+                         "ORDER BY start_time DESC LIMIT 20;";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+
+        incidents.clear();
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            IncidentEntry inc;
+            inc.id = sqlite3_column_int64(stmt, 0);
+            inc.start_time = sqlite3_column_int64(stmt, 1);
+            inc.end_time = sqlite3_column_int64(stmt, 2);
+            auto sum = sqlite3_column_text(stmt, 3);
+            inc.summary = sum ? reinterpret_cast<const char*>(sum) : "";
+            inc.peak_risk = sqlite3_column_double(stmt, 4);
+            inc.event_count = sqlite3_column_int(stmt, 5);
+            inc.is_active = sqlite3_column_int(stmt, 6) != 0;
+            incidents.push_back(inc);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    void pollAnalysisEvents(sqlite3* db) {
+        const char* sql = "SELECT timestamp, anomaly_count, pattern_count, "
+                         "risk_total, explanation FROM analysis_events "
+                         "WHERE explanation != '' "
+                         "ORDER BY timestamp DESC LIMIT 10;";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+
+        analysis_events.clear();
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            AnalysisEventEntry e;
+            e.timestamp = sqlite3_column_int64(stmt, 0);
+            e.anomaly_count = sqlite3_column_int(stmt, 1);
+            e.pattern_count = sqlite3_column_int(stmt, 2);
+            e.risk_total = sqlite3_column_double(stmt, 3);
+            auto expl = sqlite3_column_text(stmt, 4);
+            e.explanation = expl ? reinterpret_cast<const char*>(expl) : "";
+            analysis_events.push_back(e);
+        }
+        sqlite3_finalize(stmt);
+    }
 };
 
 // ── Apply a premium dark theme ──────────────────────────────────────────────
@@ -296,6 +366,20 @@ static ImVec4 severityColor(double sev) {
     if (sev < 0.3) return kAccentGreen;
     if (sev < 0.6) return kAccentOrange;
     return kAccentRed;
+}
+
+static ImVec4 riskColor(double risk) {
+    if (risk < 10) return kAccentGreen;
+    if (risk < 40) return kAccentOrange;
+    return kAccentRed;
+}
+
+static const char* formatTimestamp(int64_t ts, char* buf, size_t bufsize) {
+    time_t sec = ts / 1000;
+    struct tm tm_buf;
+    localtime_r(&sec, &tm_buf);
+    strftime(buf, bufsize, "%H:%M:%S", &tm_buf);
+    return buf;
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -374,9 +458,9 @@ int main(int argc, char* argv[]) {
         // ── Header bar ─────────────────────────────────────────────────────
         {
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentCyan);
-            ImGui::Text("⬡ SYSTEM MONITOR");
+            ImGui::Text("> SYSTEM MONITOR");
             ImGui::PopStyleColor();
-            ImGui::SameLine(ImGui::GetWindowWidth() - 300);
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 280);
 
             // Risk score badge
             ImVec4 risk_col = data.risk_score < 10 ? kAccentGreen :
@@ -401,18 +485,25 @@ int main(int argc, char* argv[]) {
             ImGui::Separator();
         }
 
-        float panel_w = ImGui::GetContentRegionAvail().x;
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float panel_w = avail.x;
         float half_w = panel_w * 0.5f - 5.0f;
-        float third_w = panel_w * 0.33f - 7.0f;
+        float third_w = panel_w * 0.333f - 7.0f;
+
+        // Proportional row heights (header already consumed some space)
+        float row1_h = avail.y * 0.28f;
+        float row2_h = avail.y * 0.25f;
+        float row3_h = avail.y * 0.22f;
+        // Row 4 (processes) gets all remaining space via (0)
 
         // ── Row 1: CPU Graph + Memory Gauge ────────────────────────────────
         {
-            ImGui::BeginChild("##CPUPanel", ImVec2(half_w, 260), true);
+            ImGui::BeginChild("##CPUPanel", ImVec2(half_w, row1_h), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentCyan);
-            ImGui::Text("▸ CPU USAGE");
+            ImGui::Text("> CPU USAGE");
             ImGui::PopStyleColor();
 
-            if (ImPlot::BeginPlot("##CPUPlot", ImVec2(-1, 210),
+            if (ImPlot::BeginPlot("##CPUPlot", ImVec2(-1, ImGui::GetContentRegionAvail().y),
                     ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
                 ImPlot::SetupAxes("", "%", ImPlotAxisFlags_NoTickLabels, 0);
                 ImPlot::SetupAxesLimits(0, 120, 0, 105, ImPlotCond_Always);
@@ -440,12 +531,12 @@ int main(int argc, char* argv[]) {
             ImGui::SameLine();
 
             // Memory panel
-            ImGui::BeginChild("##MemPanel", ImVec2(half_w, 260), true);
+            ImGui::BeginChild("##MemPanel", ImVec2(-1, row1_h), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentGreen);
-            ImGui::Text("▸ MEMORY USAGE");
+            ImGui::Text("> MEMORY USAGE");
             ImGui::PopStyleColor();
 
-            if (ImPlot::BeginPlot("##MemPlot", ImVec2(-1, 140),
+            if (ImPlot::BeginPlot("##MemPlot", ImVec2(-1, ImGui::GetContentRegionAvail().y - 45),
                     ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
                 ImPlot::SetupAxes("", "%", ImPlotAxisFlags_NoTickLabels, 0);
                 ImPlot::SetupAxesLimits(0, 120, 0, 105, ImPlotCond_Always);
@@ -489,12 +580,12 @@ int main(int argc, char* argv[]) {
         // ── Row 2: Network + Per-Core Bars + Risk ──────────────────────────
         {
             // Network throughput
-            ImGui::BeginChild("##NetPanel", ImVec2(third_w, 240), true);
+            ImGui::BeginChild("##NetPanel", ImVec2(third_w, row2_h), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentOrange);
-            ImGui::Text("▸ NETWORK");
+            ImGui::Text("> NETWORK");
             ImGui::PopStyleColor();
 
-            if (ImPlot::BeginPlot("##NetPlot", ImVec2(-1, 180),
+            if (ImPlot::BeginPlot("##NetPlot", ImVec2(-1, ImGui::GetContentRegionAvail().y),
                     ImPlotFlags_NoMouseText)) {
                 ImPlot::SetupAxes("", "kbps", ImPlotAxisFlags_NoTickLabels, 0);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0,
@@ -516,13 +607,13 @@ int main(int argc, char* argv[]) {
             ImGui::SameLine();
 
             // Per-core bar chart
-            ImGui::BeginChild("##CoreBars", ImVec2(third_w, 240), true);
+            ImGui::BeginChild("##CoreBars", ImVec2(third_w, row2_h), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentPurple);
-            ImGui::Text("▸ PER-CORE CPU");
+            ImGui::Text("> PER-CORE CPU");
             ImGui::PopStyleColor();
 
             if (!data.cpu_cores.empty() &&
-                ImPlot::BeginPlot("##CoreBarPlot", ImVec2(-1, 190),
+                ImPlot::BeginPlot("##CoreBarPlot", ImVec2(-1, ImGui::GetContentRegionAvail().y),
                     ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
                 ImPlot::SetupAxes("Core", "%", 0, 0);
                 ImPlot::SetupAxesLimits(-0.5, (double)data.cpu_cores.size() - 0.5, 0, 105, ImPlotCond_Always);
@@ -546,9 +637,9 @@ int main(int argc, char* argv[]) {
             ImGui::SameLine();
 
             // Anomaly summary
-            ImGui::BeginChild("##AnomalySum", ImVec2(third_w, 240), true);
+            ImGui::BeginChild("##AnomalySum", ImVec2(-1, row2_h), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentRed);
-            ImGui::Text("▸ RISK & ANOMALIES");
+            ImGui::Text("> RISK & ANOMALIES");
             ImGui::PopStyleColor();
 
             // Big risk number
@@ -577,11 +668,119 @@ int main(int argc, char* argv[]) {
             ImGui::EndChild();
         }
 
-        // ── Row 3: Process Table ───────────────────────────────────────────
+        // ── Row 3: Analysis Explanations + Incident Timeline ───────────────
+        {
+            float analysis_w = panel_w * 0.55f - 5.0f;
+            float timeline_w = panel_w * 0.45f - 5.0f;
+            float r3_h = row3_h;
+
+            // ── Analysis Explanation Panel ─────────────────────────────────
+            ImGui::BeginChild("##AnalysisPanel", ImVec2(analysis_w, r3_h), true);
+            ImGui::PushStyleColor(ImGuiCol_Text, kAccentCyan);
+            ImGui::Text("> ANALYSIS REPORTS");
+            ImGui::PopStyleColor();
+
+            if (data.analysis_events.empty()) {
+                ImGui::TextDisabled("No analysis events yet — waiting for anomalies...");
+            } else {
+                for (size_t i = 0; i < std::min(data.analysis_events.size(), (size_t)5); ++i) {
+                    auto& ev = data.analysis_events[i];
+                    char ts_buf[16];
+                    formatTimestamp(ev.timestamp, ts_buf, sizeof(ts_buf));
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, riskColor(ev.risk_total));
+                    ImGui::Text("%s  Risk: %.0f", ts_buf, ev.risk_total);
+                    ImGui::PopStyleColor();
+
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%d anomalies, %d patterns)",
+                                        ev.anomaly_count, ev.pattern_count);
+
+                    // Show explanation text (truncate long lines)
+                    if (!ev.explanation.empty()) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
+                        ImGui::Indent(12.0f);
+                        // Show first 3 lines of explanation
+                        std::string expl = ev.explanation;
+                        int lines_shown = 0;
+                        size_t pos = 0;
+                        while (pos < expl.size() && lines_shown < 3) {
+                            size_t nl = expl.find('\n', pos);
+                            if (nl == std::string::npos) nl = expl.size();
+                            std::string line = expl.substr(pos, nl - pos);
+                            if (!line.empty()) {
+                                ImGui::TextWrapped("%s", line.c_str());
+                                lines_shown++;
+                            }
+                            pos = nl + 1;
+                        }
+                        ImGui::Unindent(12.0f);
+                        ImGui::PopStyleColor();
+                    }
+                    ImGui::Spacing();
+                    if (i < std::min(data.analysis_events.size(), (size_t)5) - 1) {
+                        ImGui::Separator();
+                    }
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+
+            // ── Incident Timeline Panel ───────────────────────────────────
+            ImGui::BeginChild("##IncidentPanel", ImVec2(-1, r3_h), true);
+            ImGui::PushStyleColor(ImGuiCol_Text, kAccentPink);
+            ImGui::Text("> INCIDENT TIMELINE");
+            ImGui::PopStyleColor();
+
+            if (data.incidents.empty()) {
+                ImGui::TextDisabled("No incidents recorded yet.");
+            } else {
+                for (auto& inc : data.incidents) {
+                    char start_buf[16], end_buf[16];
+                    formatTimestamp(inc.start_time, start_buf, sizeof(start_buf));
+
+                    ImVec4 status_col = inc.is_active ? kAccentRed : kAccentGreen;
+                    const char* status_text = inc.is_active ? "ACTIVE" : "RESOLVED";
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, status_col);
+                    ImGui::Text("* %s", status_text);
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine();
+
+                    if (inc.is_active) {
+                        ImGui::Text("#%lld  Started %s  (%d events)",
+                                    (long long)inc.id, start_buf, inc.event_count);
+                    } else {
+                        formatTimestamp(inc.end_time, end_buf, sizeof(end_buf));
+                        ImGui::Text("#%lld  %s → %s  (%d events)",
+                                    (long long)inc.id, start_buf, end_buf, inc.event_count);
+                    }
+
+                    // Risk bar
+                    float frac = (float)(inc.peak_risk / 100.0);
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, riskColor(inc.peak_risk));
+                    char overlay[32];
+                    snprintf(overlay, sizeof(overlay), "Peak: %.0f", inc.peak_risk);
+                    ImGui::ProgressBar(frac, ImVec2(-1, 14), overlay);
+                    ImGui::PopStyleColor();
+
+                    if (!inc.summary.empty()) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.65f, 1.0f));
+                        ImGui::TextWrapped("  %s", inc.summary.c_str());
+                        ImGui::PopStyleColor();
+                    }
+                    ImGui::Spacing();
+                }
+            }
+            ImGui::EndChild();
+        }
+
+        // ── Row 4: Process Table ───────────────────────────────────────────
         {
             ImGui::BeginChild("##ProcPanel", ImVec2(-1, 0), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentPink);
-            ImGui::Text("▸ TOP PROCESSES (%zu)", data.processes.size());
+            ImGui::Text("> TOP PROCESSES (%zu)", data.processes.size());
             ImGui::PopStyleColor();
 
             if (ImGui::BeginTable("##ProcTable", 6,

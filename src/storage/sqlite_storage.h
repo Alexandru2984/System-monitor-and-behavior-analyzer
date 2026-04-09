@@ -37,6 +37,9 @@ public:
     /// Delete data older than `before` timestamp (epoch ms).
     void pruneOlderThan(int64_t before);
 
+    /// Access underlying SQLite handle (for Analyzer timeline integration)
+    sqlite3* db() { return db_; }
+
 private:
     sqlite3* db_ = nullptr;
     std::string db_path_;

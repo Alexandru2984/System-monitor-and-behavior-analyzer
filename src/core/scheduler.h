@@ -9,21 +9,17 @@
 //     1. Sleeps for the configured interval
 //     2. Calls collector->collect()
 //     3. Pushes the snapshot to storage->store()
-//     4. Passes the snapshot through the analysis pipeline
-//     5. If anomalies are found, stores them and (future) emits alerts
+//     4. Passes the snapshot through the Analyzer pipeline
+//     5. If anomalies/patterns are found, stores them and logs explanations
 //
 //   std::jthread (C++20) provides:
 //     - Automatic joining on destruction (no resource leaks)
 //     - std::stop_token for cooperative cancellation (no manual bool flags)
-//
-//   This is simpler than a thread pool for 4 collectors — each thread spends
-//   most of its time sleeping, so the overhead is negligible.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "collectors/collector.h"
 #include "storage/storage_engine.h"
-#include "analysis/anomaly_detector.h"
-#include "analysis/risk_scorer.h"
+#include "analyzer/analyzer.h"
 #include "core/config.h"
 
 #include <chrono>
@@ -35,7 +31,8 @@ namespace sysmon {
 
 class Scheduler {
 public:
-    Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config);
+    Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config,
+              sqlite3* db);
 
     /// Register a collector with its sampling interval.
     void addCollector(std::shared_ptr<ICollector> collector,
@@ -50,6 +47,9 @@ public:
     /// Is the scheduler currently running?
     bool running() const { return running_; }
 
+    /// Access the analyzer (for dashboard integration)
+    Analyzer& analyzer() { return analyzer_; }
+
 private:
     struct ScheduledTask {
         std::shared_ptr<ICollector> collector;
@@ -58,8 +58,7 @@ private:
 
     std::shared_ptr<IStorageEngine> storage_;
     Config config_;
-    AnomalyDetector detector_;
-    RiskScorer scorer_;
+    Analyzer analyzer_;
 
     std::vector<ScheduledTask> tasks_;
     std::vector<std::jthread> threads_;
