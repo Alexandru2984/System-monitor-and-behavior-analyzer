@@ -96,14 +96,15 @@ TEST(MetricBaselineTest, TrendDetectsIncrease) {
         bl.update(10.0 + i * 1.0);  // steadily increasing
     }
 
-    EXPECT_GT(bl.trend(), 0.5);  // positive slope
+    // Slope is normalized by mean (~39.5), raw slope=1.0 → ~0.025
+    EXPECT_GT(bl.trend(), 0.01);  // positive normalized slope
 }
 
 TEST(MetricBaselineTest, TrendIsNearZeroForFlat) {
     MetricBaseline bl;
     for (int i = 0; i < 60; ++i) bl.update(50.0);
 
-    EXPECT_NEAR(bl.trend(), 0.0, 0.1);
+    EXPECT_NEAR(bl.trend(), 0.0, 0.001);
 }
 
 // ── Oscillation Detection Tests ─────────────────────────────────────────────
@@ -169,9 +170,9 @@ TEST(MetricBaselineTest, NotMonotonicForFlat) {
     MetricBaseline bl;
     for (int i = 0; i < 35; ++i) bl.update(50.0);
 
-    // Flat is technically non-decreasing so it IS monotonic
-    // (our impl counts >= as increasing)
-    EXPECT_TRUE(bl.isMonotonicallyIncreasing(30));
+    // Flat input should NOT be detected as monotonically increasing —
+    // using strict > avoids false positive memory leak detection on stable values.
+    EXPECT_FALSE(bl.isMonotonicallyIncreasing(30));
 }
 
 // ── BaselineManager Tests ───────────────────────────────────────────────────
@@ -194,8 +195,78 @@ TEST(BaselineManagerTest, TracksMultipleMetrics) {
     EXPECT_NEAR(bm.get("mem").longWindow().mean, 70.0, 2.0);
 }
 
-TEST(BaselineManagerTest, ConstAccessNonExistentReturnsEmpty) {
+TEST(BaselineManagerTest, FindNonExistentReturnsNull) {
     const BaselineManager bm;
-    auto& bl = bm.get("nonexistent");
-    EXPECT_EQ(bl.shortWindow().count, 0);
+    EXPECT_EQ(bm.find("nonexistent"), nullptr);
+}
+
+TEST(BaselineManagerTest, FindExistingReturnsPointer) {
+    BaselineManager bm;
+    bm.update("cpu", 50.0);
+    const auto& cbm = bm;
+    const auto* bl = cbm.find("cpu");
+    ASSERT_NE(bl, nullptr);
+    EXPECT_EQ(bl->shortWindow().count, 1);
+}
+
+// ── Edge case tests ────────────────────────────────────────────────────────
+
+TEST(MetricBaselineTest, SingleValueDoesNotCrash) {
+    MetricBaseline bl;
+    bl.update(42.0);
+    auto sw = bl.shortWindow();
+    EXPECT_EQ(sw.count, 1);
+    EXPECT_FALSE(sw.ready);
+}
+
+TEST(MetricBaselineTest, ZeroValuesHandled) {
+    MetricBaseline bl;
+    for (int i = 0; i < 30; ++i) bl.update(0.0);
+    auto lw = bl.longWindow();
+    EXPECT_TRUE(lw.ready);
+    EXPECT_NEAR(lw.mean, 0.0, 0.01);
+    EXPECT_NEAR(lw.sigma, 0.0, 0.01);
+}
+
+TEST(MetricBaselineTest, LargeValueRange) {
+    MetricBaseline bl;
+    for (int i = 0; i < 50; ++i) {
+        bl.update(i % 2 == 0 ? 0.0 : 100.0);
+    }
+    auto lw = bl.longWindow();
+    EXPECT_TRUE(lw.ready);
+    EXPECT_GT(lw.sigma, 10.0);  // high variance
+    EXPECT_GE(lw.max_val, 100.0);
+    EXPECT_LE(lw.min_val, 0.0);
+}
+
+TEST(MetricBaselineTest, AnomalyThresholdWithHighFloor) {
+    MetricBaseline bl;
+    for (int i = 0; i < 30; ++i) bl.update(10.0);
+    // With sigma floor 50 and multiplier 2: threshold = 10 + 2*50 = 110
+    double thresh = bl.anomalyThreshold(2.0, 50.0);
+    EXPECT_NEAR(thresh, 110.0, 5.0);
+}
+
+TEST(MetricBaselineTest, OscillationZeroForTooFewSamples) {
+    MetricBaseline bl;
+    for (int i = 0; i < 3; ++i) bl.update(50.0);
+    EXPECT_EQ(bl.oscillationCount(), 0);
+}
+
+TEST(MetricBaselineTest, MonotonicIncreasingWithNoise) {
+    MetricBaseline bl;
+    // Generally increasing but with ~5% noise
+    for (int i = 0; i < 40; ++i) {
+        double val = 10.0 + i * 1.0 + (i % 10 == 7 ? -0.1 : 0.0);
+        bl.update(val);
+    }
+    // Should still detect as monotonically increasing (90% tolerance)
+    EXPECT_TRUE(bl.isMonotonicallyIncreasing(30));
+}
+
+TEST(MetricBaselineTest, NotMonotonicForDecreasing) {
+    MetricBaseline bl;
+    for (int i = 0; i < 40; ++i) bl.update(100.0 - i * 1.0);
+    EXPECT_FALSE(bl.isMonotonicallyIncreasing(30));
 }

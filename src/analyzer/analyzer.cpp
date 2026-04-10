@@ -11,7 +11,7 @@
 namespace sysmon {
 
 Analyzer::Analyzer(const std::string& db_path, double sigma_threshold, double ema_alpha)
-    : baselines_(ema_alpha * 3.0, ema_alpha)
+    : baselines_(std::min(ema_alpha * 3.0, 1.0), ema_alpha)
     , timeline_(db_path)
     , sigma_threshold_(sigma_threshold)
 {
@@ -43,9 +43,9 @@ AnalysisReport Analyzer::analyze(const MetricSnapshot& snapshot) {
         report.explanation = explainer_.explain(
             report.anomalies, report.patterns, snapshot, baselines_);
 
-        // Set risk_score on individual anomaly events
+        // Set risk_score on individual anomaly events proportional to their severity
         for (auto& a : report.anomalies) {
-            a.risk_score = report.risk.total;
+            a.risk_score = a.severity * report.risk.total;
         }
 
         LOG_INFO("Analysis: risk={:.1f}/100 ({} anomalies, {} patterns)",
@@ -91,13 +91,10 @@ std::vector<AnomalyEvent> Analyzer::checkCpu(const CpuSnapshot& s) {
                 (s.total_usage_percent - lw.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
-                .timestamp = s.timestamp,
-                .metric_type = "cpu",
-                .description = std::format(
+                {s.timestamp, "cpu", std::format(
                     "CPU spike: {:.1f}% (baseline: {:.1f}% ± {:.1f}%, P95: {:.1f}%)",
-                    s.total_usage_percent, lw.mean, lw.sigma, lw.p95),
-                .severity = severity,
-                .risk_score = 0.0
+                    s.total_usage_percent, lw.mean, lw.sigma, lw.p95)},
+                severity, 0.0
             });
 
             LOG_WARN("ANOMALY: {}", events.back().description);
@@ -120,13 +117,10 @@ std::vector<AnomalyEvent> Analyzer::checkMemory(const MemorySnapshot& s) {
                 (s.usage_percent - lw.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
-                .timestamp = s.timestamp,
-                .metric_type = "memory",
-                .description = std::format(
+                {s.timestamp, "memory", std::format(
                     "Memory pressure: {:.1f}% (baseline: {:.1f}% ± {:.1f}%, P95: {:.1f}%)",
-                    s.usage_percent, lw.mean, lw.sigma, lw.p95),
-                .severity = severity,
-                .risk_score = 0.0
+                    s.usage_percent, lw.mean, lw.sigma, lw.p95)},
+                severity, 0.0
             });
 
             LOG_WARN("ANOMALY: {}", events.back().description);
@@ -156,13 +150,10 @@ std::vector<AnomalyEvent> Analyzer::checkNetwork(const NetworkSnapshot& s) {
                 (total_rx - lw_rx.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
-                .timestamp = s.timestamp,
-                .metric_type = "network",
-                .description = std::format(
+                {s.timestamp, "network", std::format(
                     "Network RX spike: {:.1f} kbps (baseline: {:.1f} ± {:.1f})",
-                    total_rx, lw_rx.mean, lw_rx.sigma),
-                .severity = severity,
-                .risk_score = 0.0
+                    total_rx, lw_rx.mean, lw_rx.sigma)},
+                severity, 0.0
             });
         }
     }
@@ -178,13 +169,10 @@ std::vector<AnomalyEvent> Analyzer::checkNetwork(const NetworkSnapshot& s) {
                 (total_tx - lw_tx.mean) / (effective_sigma * sigma_threshold_));
 
             events.push_back(AnomalyEvent{
-                .timestamp = s.timestamp,
-                .metric_type = "network",
-                .description = std::format(
+                {s.timestamp, "network", std::format(
                     "Network TX spike: {:.1f} kbps (baseline: {:.1f} ± {:.1f})",
-                    total_tx, lw_tx.mean, lw_tx.sigma),
-                .severity = severity,
-                .risk_score = 0.0
+                    total_tx, lw_tx.mean, lw_tx.sigma)},
+                severity, 0.0
             });
         }
     }

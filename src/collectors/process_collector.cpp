@@ -102,6 +102,10 @@ MetricSnapshot ProcessCollector::collect() {
             statm_file >> size_pages >> rss_pages;
         }
 
+        // Skip kernel threads: they have zero RSS (no user-space memory).
+        // This filters out kthreadd, kworker/*, ksoftirqd, etc.
+        if (rss_pages == 0) continue;
+
         // ── Read UID from /proc/[pid]/status ───────────────────────────────
         std::string status_path = "/proc/" + std::string(entry->d_name) + "/status";
         std::ifstream status_file(status_path);

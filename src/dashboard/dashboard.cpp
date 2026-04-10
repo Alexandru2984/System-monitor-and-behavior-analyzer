@@ -20,6 +20,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -40,11 +41,24 @@ static const ImVec4 kAccentPurple = ImVec4(0.68f, 0.39f, 0.95f, 1.0f);
 static const ImVec4 kAccentPink   = ImVec4(0.93f, 0.35f, 0.65f, 1.0f);
 static const ImVec4 kBgPanel      = ImVec4(0.12f, 0.12f, 0.15f, 1.0f);
 
+// ── Dashboard constants ─────────────────────────────────────────────────────
+static constexpr size_t  ROLLING_BUFFER_SIZE    = 120;   // 2 min at 1s intervals
+static constexpr int     POLL_INTERVAL_MS       = 500;
+static constexpr int     STRESS_DURATION_SEC    = 20;
+static constexpr int     STRESS_THREADS         = 4;
+static constexpr int     MAX_PROCESSES_DISPLAY  = 50;
+static constexpr int     MAX_ANOMALIES_DISPLAY  = 50;
+static constexpr int     MAX_INCIDENTS_DISPLAY  = 20;
+static constexpr int     MAX_EVENTS_DISPLAY     = 10;
+static constexpr int     MAX_CORE_DISPLAY       = 8;
+static constexpr double  RISK_LOW_THRESHOLD     = 10.0;
+static constexpr double  RISK_MED_THRESHOLD     = 40.0;
+
 // ── Rolling buffer for time-series data ─────────────────────────────────────
 struct RollingBuffer {
     std::deque<double> data;
     size_t max_size;
-    explicit RollingBuffer(size_t n = 120) : max_size(n) {}
+    explicit RollingBuffer(size_t n = ROLLING_BUFFER_SIZE) : max_size(n) {}
     void push(double v) {
         data.push_back(v);
         while (data.size() > max_size) data.pop_front();
@@ -58,10 +72,10 @@ static std::atomic<bool> g_is_stressing{false};
 static void startStressTest() {
     if (g_is_stressing) return;
     g_is_stressing = true;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < STRESS_THREADS; ++i) {
         std::thread([]{
             auto start = std::chrono::steady_clock::now();
-            while (std::chrono::steady_clock::now() - start < std::chrono::seconds(20)) {
+            while (std::chrono::steady_clock::now() - start < std::chrono::seconds(STRESS_DURATION_SEC)) {
                 volatile uint64_t x = 1;
                 for (int j = 0; j < 10000; ++j) {
                     x = (x * 1103515245 + 12345) % 2147483648;
@@ -70,20 +84,13 @@ static void startStressTest() {
         }).detach();
     }
     std::thread([]{
-        std::this_thread::sleep_for(std::chrono::seconds(20));
+        std::this_thread::sleep_for(std::chrono::seconds(STRESS_DURATION_SEC));
         g_is_stressing = false;
     }).detach();
 }
 
-// ── Process table entry ─────────────────────────────────────────────────────
-struct ProcEntry {
-    int pid;
-    std::string name;
-    std::string user;
-    std::string state;
-    double cpu_pct;
-    double mem_pct;
-};
+// Process table uses sysmon::ProcessInfo from core/types.h
+using ProcEntry = sysmon::ProcessInfo;
 
 // ── Anomaly log entry ───────────────────────────────────────────────────────
 struct AnomalyEntry {
@@ -115,45 +122,54 @@ struct AnalysisEventEntry {
 };
 
 // ── Export functions ────────────────────────────────────────────────────────
+
+// Try running a command and return its stdout (empty on failure).
+static std::string runDialogCmd(const std::string& cmd) {
+    std::string result;
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return {};
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+    int status = pclose(pipe);
+    if (status != 0) return {};   // user cancelled or command not found
+    if (!result.empty() && result.back() == '\n') result.pop_back();
+    return result;
+}
+
+// Portable save-file dialog: tries zenity → kdialog → default path fallback.
 static std::string saveFileDialog(const std::string& default_name, const std::string& ext) {
     char cwd_buf[1024];
-    std::string pwd = "";
+    std::string pwd;
     if (getcwd(cwd_buf, sizeof(cwd_buf))) {
         pwd = std::string(cwd_buf) + "/";
     }
-
     std::string filepath = pwd + default_name;
-    
-    // Create an empty dummy file so Zenity/GTK populates the 'Name' field correctly
-    { std::ofstream out(filepath); }
 
-    std::string cmd = "zenity --file-selection --save --confirm-overwrite "
-                      "--title=\"Export Data\" "
-                      "--filename=\"" + filepath + "\" "
-                      "--file-filter=\"" + ext + " files | *." + ext + "\" 2>/dev/null";
-                      
-    std::string result;
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (pipe) {
-        char buffer[256];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            result += buffer;
-        }
-        pclose(pipe);
+    // Try zenity (GTK desktops)
+    std::string result = runDialogCmd(
+        "zenity --file-selection --save --confirm-overwrite "
+        "--title=\"Export Data\" "
+        "--filename=\"" + filepath + "\" "
+        "--file-filter=\"" + ext + " files | *." + ext + "\" 2>/dev/null");
+
+    // Try kdialog (KDE desktops)
+    if (result.empty()) {
+        result = runDialogCmd(
+            "kdialog --getsavefilename \"" + filepath + "\" \"*." + ext + "\" 2>/dev/null");
     }
-    
-    // Clean up our dummy file (it will be overwritten later if the user actually clicked Save)
-    unlink(filepath.c_str());
 
-    if (!result.empty() && result.back() == '\n') result.pop_back();
+    // Fallback: use default path directly (no GUI dialog available)
+    if (result.empty()) {
+        result = filepath;
+    }
 
-    // Ensure it has the right extension if the user just typed a name
-    if (!result.empty()) {
-        std::string expected_ext = "." + ext;
-        if (result.size() < expected_ext.size() || 
-            result.substr(result.size() - expected_ext.size()) != expected_ext) {
-            result += expected_ext;
-        }
+    // Ensure correct extension
+    std::string expected_ext = "." + ext;
+    if (result.size() < expected_ext.size() ||
+        result.substr(result.size() - expected_ext.size()) != expected_ext) {
+        result += expected_ext;
     }
 
     return result;
@@ -169,6 +185,17 @@ static std::string getCurrentTimestampString() {
     return std::string(buf);
 }
 
+static std::string csvEscape(const std::string& field) {
+    if (field.find_first_of(",\"\n") == std::string::npos) return field;
+    std::string escaped = "\"";
+    for (char c : field) {
+        if (c == '"') escaped += "\"\"";
+        else escaped += c;
+    }
+    escaped += '"';
+    return escaped;
+}
+
 static void exportDataToCSV(std::vector<ProcEntry> procs) {
     std::thread([procs = std::move(procs)]() {
         std::string filename = "resources_" + getCurrentTimestampString() + ".csv";
@@ -178,8 +205,8 @@ static void exportDataToCSV(std::vector<ProcEntry> procs) {
         if (std::ofstream os{filepath}) {
             os << "PID,Name,User,State,CPU%,MEM%\n";
             for (const auto& p : procs) {
-                os << p.pid << "," << p.name << "," << p.user << "," 
-                   << p.state << "," << p.cpu_pct << "," << p.mem_pct << "\n";
+                os << p.pid << "," << csvEscape(p.name) << "," << csvEscape(p.user)
+                   << "," << csvEscape(p.state) << "," << p.cpu_percent << "," << p.mem_percent << "\n";
             }
         }
     }).detach();
@@ -217,31 +244,66 @@ class DashboardData {
 public:
     DashboardData(const std::string& db_path) : db_path_(db_path) {}
 
+    ~DashboardData() {
+        if (db_) sqlite3_close(db_);
+    }
+
+    // Non-copyable due to owning sqlite3* handle — use move semantics
+    DashboardData(const DashboardData& other)
+        : cpu_total(other.cpu_total), cpu_cores(other.cpu_cores)
+        , mem_usage(other.mem_usage), mem_used_gb(other.mem_used_gb)
+        , mem_total_gb(other.mem_total_gb), net_rx(other.net_rx), net_tx(other.net_tx)
+        , processes(other.processes), anomalies(other.anomalies)
+        , incidents(other.incidents), analysis_events(other.analysis_events)
+        , risk_score(other.risk_score)
+        , last_cpu_ts_(other.last_cpu_ts_), last_mem_ts_(other.last_mem_ts_)
+        , last_net_ts_(other.last_net_ts_)
+        , db_path_(other.db_path_)
+    {
+        // Copy does NOT share the db_ handle — only the poller's instance opens DB
+    }
+
+    DashboardData& operator=(const DashboardData& other) {
+        if (this == &other) return *this;
+        db_path_ = other.db_path_;
+        cpu_total = other.cpu_total; cpu_cores = other.cpu_cores;
+        mem_usage = other.mem_usage; mem_used_gb = other.mem_used_gb;
+        mem_total_gb = other.mem_total_gb; net_rx = other.net_rx; net_tx = other.net_tx;
+        processes = other.processes; anomalies = other.anomalies;
+        incidents = other.incidents; analysis_events = other.analysis_events;
+        risk_score = other.risk_score;
+        last_cpu_ts_ = other.last_cpu_ts_; last_mem_ts_ = other.last_mem_ts_;
+        last_net_ts_ = other.last_net_ts_;
+        // Do NOT copy db_ — only the poller owns a connection
+        return *this;
+    }
+
     void poll() {
-        sqlite3* db = nullptr;
-        if (sqlite3_open_v2(db_path_.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-            return;
+        if (!db_) {
+            if (sqlite3_open_v2(db_path_.c_str(), &db_, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+                db_ = nullptr;
+                return;
+            }
+            sqlite3_busy_timeout(db_, 5000);
         }
 
-        pollCpu(db);
-        pollMemory(db);
-        pollNetwork(db);
-        pollProcesses(db);
-        pollAnomalies(db);
-        pollIncidents(db);
-        pollAnalysisEvents(db);
-
-        sqlite3_close(db);
+        pollCpu(db_);
+        pollMemory(db_);
+        pollNetwork(db_);
+        pollProcesses(db_);
+        pollAnomalies(db_);
+        pollIncidents(db_);
+        pollAnalysisEvents(db_);
     }
 
     // Rolling buffers (120 points = 2 minutes at 1s intervals)
-    RollingBuffer cpu_total{120};
+    RollingBuffer cpu_total;
     std::vector<RollingBuffer> cpu_cores;
-    RollingBuffer mem_usage{120};
-    RollingBuffer mem_used_gb{120};
-    RollingBuffer mem_total_gb{120};
-    RollingBuffer net_rx{120};
-    RollingBuffer net_tx{120};
+    RollingBuffer mem_usage;
+    RollingBuffer mem_used_gb;
+    RollingBuffer mem_total_gb;
+    RollingBuffer net_rx;
+    RollingBuffer net_tx;
 
     std::vector<ProcEntry> processes;
     std::vector<AnomalyEntry> anomalies;
@@ -255,13 +317,14 @@ public:
 
 private:
     std::string db_path_;
+    sqlite3* db_ = nullptr;
 
     void pollCpu(sqlite3* db) {
         // Get latest aggregate CPU reading
         const char* sql = "SELECT timestamp, usage_pct FROM cpu_metrics "
                          "WHERE core_id = -1 AND timestamp > ? ORDER BY timestamp;";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
         sqlite3_bind_int64(stmt, 1, last_cpu_ts_);
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -273,7 +336,7 @@ private:
         // Per-core data (latest only)
         const char* core_sql = "SELECT core_id, usage_pct FROM cpu_metrics "
                                "WHERE timestamp = ? AND core_id >= 0 ORDER BY core_id;";
-        sqlite3_prepare_v2(db, core_sql, -1, &stmt, nullptr);
+        if (sqlite3_prepare_v2(db, core_sql, -1, &stmt, nullptr) != SQLITE_OK) return;
         sqlite3_bind_int64(stmt, 1, last_cpu_ts_);
 
         std::vector<double> core_vals;
@@ -294,8 +357,8 @@ private:
     void pollMemory(sqlite3* db) {
         const char* sql = "SELECT timestamp, total_kb, used_kb, usage_pct FROM memory_metrics "
                          "WHERE timestamp > ? ORDER BY timestamp;";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
         sqlite3_bind_int64(stmt, 1, last_mem_ts_);
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -314,8 +377,8 @@ private:
         const char* sql = "SELECT timestamp, SUM(rx_rate_kbps), SUM(tx_rate_kbps) "
                          "FROM network_metrics WHERE timestamp > ? "
                          "GROUP BY timestamp ORDER BY timestamp;";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
         sqlite3_bind_int64(stmt, 1, last_net_ts_);
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -328,66 +391,71 @@ private:
 
     void pollProcesses(sqlite3* db) {
         // No ORDER BY — the UI sorts client-side via ImGui sort specs.
-        const char* sql = "SELECT pid, name, user, state, cpu_pct, mem_pct "
-                         "FROM process_snapshots WHERE timestamp = "
-                         "(SELECT MAX(timestamp) FROM process_snapshots) "
-                         "LIMIT 50;";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        std::string sql = "SELECT pid, name, user, state, cpu_pct, mem_pct "
+                          "FROM process_snapshots WHERE timestamp = "
+                          "(SELECT MAX(timestamp) FROM process_snapshots) "
+                          "LIMIT " + std::to_string(MAX_PROCESSES_DISPLAY) + ";";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return;
 
         processes.clear();
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             ProcEntry p;
             p.pid = sqlite3_column_int(stmt, 0);
-            p.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            p.user = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            auto name_txt = sqlite3_column_text(stmt, 1);
+            p.name = name_txt ? reinterpret_cast<const char*>(name_txt) : "";
+            auto user_txt = sqlite3_column_text(stmt, 2);
+            p.user = user_txt ? reinterpret_cast<const char*>(user_txt) : "";
             auto state_txt = sqlite3_column_text(stmt, 3);
             p.state = state_txt ? reinterpret_cast<const char*>(state_txt) : "?";
-            p.cpu_pct = sqlite3_column_double(stmt, 4);
-            p.mem_pct = sqlite3_column_double(stmt, 5);
+            p.cpu_percent = sqlite3_column_double(stmt, 4);
+            p.mem_percent = sqlite3_column_double(stmt, 5);
             processes.push_back(p);
         }
         sqlite3_finalize(stmt);
     }
 
     void pollAnomalies(sqlite3* db) {
-        const char* sql = "SELECT timestamp, metric_type, description, severity, risk_score "
-                         "FROM anomalies ORDER BY timestamp DESC LIMIT 50;";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+        std::string sql = "SELECT timestamp, metric_type, description, severity, risk_score "
+                          "FROM anomalies ORDER BY timestamp DESC LIMIT " + std::to_string(MAX_ANOMALIES_DISPLAY) + ";";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return;
 
         anomalies.clear();
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             AnomalyEntry a;
             a.timestamp = sqlite3_column_int64(stmt, 0);
-            a.type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            a.description = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            auto type_txt = sqlite3_column_text(stmt, 1);
+            a.type = type_txt ? reinterpret_cast<const char*>(type_txt) : "";
+            auto desc_txt = sqlite3_column_text(stmt, 2);
+            a.description = desc_txt ? reinterpret_cast<const char*>(desc_txt) : "";
             a.severity = sqlite3_column_double(stmt, 3);
             a.risk_score = sqlite3_column_double(stmt, 4);
             anomalies.push_back(a);
         }
         sqlite3_finalize(stmt);
 
-        // Compute composite risk: time-weighted sum of recent anomalies.
-        // Recent anomalies contribute more; older ones decay exponentially.
-        // Capped at 100 to match the UI's 0–100 scale.
+        // Use the analyzer's multi-factor risk score from the latest analysis event
+        // instead of computing a separate decay-based score here.
+        // This keeps a single source of truth for risk (the Analyzer's RiskEngine).
         risk_score = 0.0;
-        constexpr double decay = 0.7;  // per-event decay factor
-        double weight = 1.0;
-        for (const auto& a : anomalies) {
-            risk_score += a.severity * 25.0 * weight;  // severity ∈ [0,1] → 0–25 per event
-            weight *= decay;
-            if (weight < 0.01) break;
+        const char* risk_sql = "SELECT risk_total FROM analysis_events "
+                               "ORDER BY timestamp DESC LIMIT 1;";
+        sqlite3_stmt* risk_stmt = nullptr;
+        if (sqlite3_prepare_v2(db, risk_sql, -1, &risk_stmt, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(risk_stmt) == SQLITE_ROW) {
+                risk_score = sqlite3_column_double(risk_stmt, 0);
+            }
+            sqlite3_finalize(risk_stmt);
         }
-        risk_score = std::min(risk_score, 100.0);
     }
 
     void pollIncidents(sqlite3* db) {
-        const char* sql = "SELECT id, start_time, end_time, summary, peak_risk, "
-                         "event_count, is_active FROM incidents "
-                         "ORDER BY start_time DESC LIMIT 20;";
+        std::string sql = "SELECT id, start_time, end_time, summary, peak_risk, "
+                          "event_count, is_active FROM incidents "
+                          "ORDER BY start_time DESC LIMIT " + std::to_string(MAX_INCIDENTS_DISPLAY) + ";";
         sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return;
 
         incidents.clear();
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -406,12 +474,12 @@ private:
     }
 
     void pollAnalysisEvents(sqlite3* db) {
-        const char* sql = "SELECT timestamp, anomaly_count, pattern_count, "
-                         "risk_total, explanation FROM analysis_events "
-                         "WHERE explanation != '' "
-                         "ORDER BY timestamp DESC LIMIT 10;";
+        std::string sql = "SELECT timestamp, anomaly_count, pattern_count, "
+                          "risk_total, explanation FROM analysis_events "
+                          "WHERE explanation != '' "
+                          "ORDER BY timestamp DESC LIMIT " + std::to_string(MAX_EVENTS_DISPLAY) + ";";
         sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return;
 
         analysis_events.clear();
         while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -473,7 +541,7 @@ static void applyDarkTheme() {
 
 // ── Helper: plot a rolling buffer with ImPlot ───────────────────────────────
 static void plotRolling(const char* label, const RollingBuffer& buf,
-                        float y_min, float y_max, ImVec4 color) {
+                        float /*y_min*/, float /*y_max*/, ImVec4 color) {
     if (buf.empty()) return;
     std::vector<double> xs(buf.data.size()), ys(buf.data.begin(), buf.data.end());
     for (size_t i = 0; i < xs.size(); ++i) xs[i] = (double)i;
@@ -492,8 +560,8 @@ static ImVec4 severityColor(double sev) {
 }
 
 static ImVec4 riskColor(double risk) {
-    if (risk < 10) return kAccentGreen;
-    if (risk < 40) return kAccentOrange;
+    if (risk < RISK_LOW_THRESHOLD) return kAccentGreen;
+    if (risk < RISK_MED_THRESHOLD) return kAccentOrange;
     return kAccentRed;
 }
 
@@ -549,37 +617,40 @@ int main(int argc, char* argv[]) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
-    // ── Data source ────────────────────────────────────────────────────────
-    DashboardData data(db_path);
-
-    std::mutex data_mutex;
+    // ── Data source (double-buffer: lock-free swap between poller & renderer) ─
+    // The poller owns a persistent DashboardData (with DB connection and rolling
+    // buffers).  After each poll it copies the snapshot into buffers[write_idx],
+    // then swaps the index atomically.  The renderer reads from the other buffer.
+    // No mutex needed — single producer, single consumer.
+    std::array<DashboardData, 2> buffers{DashboardData(db_path), DashboardData(db_path)};
+    std::atomic<int> read_idx{0};
     std::atomic<bool> run_poller{true};
-    std::atomic<bool> data_updated{false};
+    std::atomic<bool> data_ready{false};
 
     std::thread poller([&]() {
-        DashboardData local_data(db_path);
+        DashboardData local_data(db_path);   // persistent working copy
+        int wi = 1;                           // start writing to buffer[1]
         while (run_poller) {
             local_data.poll();
-            {
-                std::lock_guard<std::mutex> lock(data_mutex);
-                data = local_data;
-                data_updated = true;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            buffers[wi] = local_data;         // copy snapshot into publish buffer
+            // Publish: make the freshly written buffer available to the renderer.
+            read_idx.store(wi, std::memory_order_release);
+            data_ready.store(true, std::memory_order_release);
+            wi = 1 - wi;                      // alternate write target
+            std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
         }
     });
 
-    DashboardData render_data(db_path);
+    const DashboardData* render_data = &buffers[0];
 
     // ── Main loop ──────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
         // ── Grab fresh data if available ───────────────────────────────────
-        if (data_updated) {
-            std::lock_guard<std::mutex> lock(data_mutex);
-            render_data = data;
-            data_updated = false;
+        if (data_ready.load(std::memory_order_acquire)) {
+            render_data = &buffers[read_idx.load(std::memory_order_acquire)];
+            data_ready.store(false, std::memory_order_relaxed);
         }
 
         ImGui_ImplOpenGL3_NewFrame();
@@ -615,20 +686,20 @@ int main(int argc, char* argv[]) {
 
             ImGui::SameLine();
             if (ImGui::Button("Export Data")) {
-                exportDataToCSV(render_data.processes);
+                exportDataToCSV(render_data->processes);
             }
             ImGui::SameLine();
             if (ImGui::Button("Export Reports")) {
-                exportReportsToTXT(render_data.analysis_events);
+                exportReportsToTXT(render_data->analysis_events);
             }
 
             ImGui::SameLine(ImGui::GetContentRegionAvail().x - 280);
 
             // Risk score badge
-            ImVec4 risk_col = render_data.risk_score < 10 ? kAccentGreen :
-                              render_data.risk_score < 40 ? kAccentOrange : kAccentRed;
+            ImVec4 risk_col = render_data->risk_score < RISK_LOW_THRESHOLD ? kAccentGreen :
+                              render_data->risk_score < RISK_MED_THRESHOLD ? kAccentOrange : kAccentRed;
             ImGui::PushStyleColor(ImGuiCol_Text, risk_col);
-            ImGui::Text("RISK: %.0f/100", render_data.risk_score);
+            ImGui::Text("RISK: %.0f/100", render_data->risk_score);
             ImGui::PopStyleColor();
 
             ImGui::SameLine();
@@ -636,12 +707,12 @@ int main(int argc, char* argv[]) {
             ImGui::SameLine();
 
             // Quick stats
-            if (!render_data.cpu_total.empty()) {
-                ImGui::Text("CPU: %.0f%%", render_data.cpu_total.back());
+            if (!render_data->cpu_total.empty()) {
+                ImGui::Text("CPU: %.0f%%", render_data->cpu_total.back());
             }
             ImGui::SameLine();
-            if (!render_data.mem_usage.empty()) {
-                ImGui::Text("RAM: %.0f%%", render_data.mem_usage.back());
+            if (!render_data->mem_usage.empty()) {
+                ImGui::Text("RAM: %.0f%%", render_data->mem_usage.back());
             }
 
             ImGui::Separator();
@@ -670,7 +741,7 @@ int main(int argc, char* argv[]) {
                 ImPlot::SetupAxes("", "%", ImPlotAxisFlags_NoTickLabels, 0);
                 ImPlot::SetupAxesLimits(0, 120, 0, 105, ImPlotCond_Always);
 
-                plotRolling("Total", data.cpu_total, 0, 100, kAccentCyan);
+                plotRolling("Total", render_data->cpu_total, 0, 100, kAccentCyan);
 
                 // Per-core lines (semi-transparent)
                 ImVec4 core_colors[] = {
@@ -678,12 +749,12 @@ int main(int argc, char* argv[]) {
                     ImVec4(0.4f, 0.7f, 1.0f, 0.6f), ImVec4(1.0f, 1.0f, 0.4f, 0.6f),
                     ImVec4(0.6f, 1.0f, 0.6f, 0.6f), ImVec4(1.0f, 0.6f, 1.0f, 0.6f)
                 };
-                for (size_t i = 0; i < data.cpu_cores.size() && i < 8; ++i) {
+                for (size_t i = 0; i < render_data->cpu_cores.size() && i < MAX_CORE_DISPLAY; ++i) {
                     char label[16];
                     snprintf(label, sizeof(label), "Core %zu", i);
                     ImVec4 c = core_colors[i % 8];
                     c.w = 0.4f;
-                    plotRolling(label, data.cpu_cores[i], 0, 100, c);
+                    plotRolling(label, render_data->cpu_cores[i], 0, 100, c);
                 }
 
                 ImPlot::EndPlot();
@@ -704,9 +775,9 @@ int main(int argc, char* argv[]) {
                 ImPlot::SetupAxesLimits(0, 120, 0, 105, ImPlotCond_Always);
 
                 // Shade under the line for visual impact
-                if (!data.mem_usage.empty()) {
-                    std::vector<double> xs(data.mem_usage.data.size());
-                    std::vector<double> ys(data.mem_usage.data.begin(), data.mem_usage.data.end());
+                if (!render_data->mem_usage.empty()) {
+                    std::vector<double> xs(render_data->mem_usage.data.size());
+                    std::vector<double> ys(render_data->mem_usage.data.begin(), render_data->mem_usage.data.end());
                     std::vector<double> zeros(xs.size(), 0.0);
                     for (size_t i = 0; i < xs.size(); ++i) xs[i] = (double)i;
 
@@ -722,13 +793,13 @@ int main(int argc, char* argv[]) {
             }
 
             // Memory numbers
-            if (!data.mem_used_gb.empty()) {
+            if (!render_data->mem_used_gb.empty()) {
                 ImGui::Text("Used: %.1f / %.1f GB  (%.1f%%)",
-                    data.mem_used_gb.back(), data.mem_total_gb.back(),
-                    data.mem_usage.back());
+                    render_data->mem_used_gb.back(), render_data->mem_total_gb.back(),
+                    render_data->mem_usage.back());
 
                 // Progress bar
-                float frac = (float)(data.mem_usage.back() / 100.0);
+                float frac = (float)(render_data->mem_usage.back() / 100.0);
                 ImVec4 bar_col = frac < 0.7f ? kAccentGreen :
                                  frac < 0.9f ? kAccentOrange : kAccentRed;
                 ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_col);
@@ -752,15 +823,15 @@ int main(int argc, char* argv[]) {
                 ImPlot::SetupAxes("", "kbps", ImPlotAxisFlags_NoTickLabels, 0);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0,
                     std::max(100.0, std::max(
-                        data.net_rx.empty() ? 0.0 : *std::max_element(data.net_rx.data.begin(), data.net_rx.data.end()),
-                        data.net_tx.empty() ? 0.0 : *std::max_element(data.net_tx.data.begin(), data.net_tx.data.end())
+                        render_data->net_rx.empty() ? 0.0 : *std::max_element(render_data->net_rx.data.begin(), render_data->net_rx.data.end()),
+                        render_data->net_tx.empty() ? 0.0 : *std::max_element(render_data->net_tx.data.begin(), render_data->net_tx.data.end())
                     ) * 1.2),
                     ImPlotCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_X1, 0, 120, ImPlotCond_Always);
                 ImPlot::SetupLegend(ImPlotLocation_NorthEast);
 
-                plotRolling("RX", data.net_rx, 0, 0, kAccentCyan);
-                plotRolling("TX", data.net_tx, 0, 0, kAccentOrange);
+                plotRolling("RX", render_data->net_rx, 0, 0, kAccentCyan);
+                plotRolling("TX", render_data->net_tx, 0, 0, kAccentOrange);
 
                 ImPlot::EndPlot();
             }
@@ -774,17 +845,17 @@ int main(int argc, char* argv[]) {
             ImGui::Text("> PER-CORE CPU");
             ImGui::PopStyleColor();
 
-            if (!data.cpu_cores.empty() &&
+            if (!render_data->cpu_cores.empty() &&
                 ImPlot::BeginPlot("##CoreBarPlot", ImVec2(-1, ImGui::GetContentRegionAvail().y),
                     ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
                 ImPlot::SetupAxes("Core", "%", 0, 0);
-                ImPlot::SetupAxesLimits(-0.5, (double)data.cpu_cores.size() - 0.5, 0, 105, ImPlotCond_Always);
+                ImPlot::SetupAxesLimits(-0.5, (double)render_data->cpu_cores.size() - 0.5, 0, 105, ImPlotCond_Always);
 
-                std::vector<double> positions(data.cpu_cores.size());
-                std::vector<double> values(data.cpu_cores.size());
-                for (size_t i = 0; i < data.cpu_cores.size(); ++i) {
+                std::vector<double> positions(render_data->cpu_cores.size());
+                std::vector<double> values(render_data->cpu_cores.size());
+                for (size_t i = 0; i < render_data->cpu_cores.size(); ++i) {
                     positions[i] = (double)i;
-                    values[i] = data.cpu_cores[i].back();
+                    values[i] = render_data->cpu_cores[i].back();
                 }
 
                 ImPlot::PushStyleColor(ImPlotCol_Fill, kAccentPurple);
@@ -805,23 +876,23 @@ int main(int argc, char* argv[]) {
             ImGui::PopStyleColor();
 
             // Big risk number
-            ImVec4 risk_col = data.risk_score < 10 ? kAccentGreen :
-                              data.risk_score < 40 ? kAccentOrange : kAccentRed;
+            ImVec4 risk_col = render_data->risk_score < RISK_LOW_THRESHOLD ? kAccentGreen :
+                              render_data->risk_score < RISK_MED_THRESHOLD ? kAccentOrange : kAccentRed;
             ImGui::PushStyleColor(ImGuiCol_Text, risk_col);
             ImGui::SetWindowFontScale(2.5f);
-            ImGui::Text("%.0f", data.risk_score);
+            ImGui::Text("%.0f", render_data->risk_score);
             ImGui::SetWindowFontScale(1.0f);
             ImGui::PopStyleColor();
             ImGui::SameLine();
             ImGui::TextDisabled("/ 100");
 
             ImGui::Spacing();
-            ImGui::Text("Total anomalies: %zu", data.anomalies.size());
+            ImGui::Text("Total anomalies: %zu", render_data->anomalies.size());
 
             // Recent anomalies list
             ImGui::Spacing();
-            for (size_t i = 0; i < std::min(data.anomalies.size(), (size_t)5); ++i) {
-                auto& a = data.anomalies[i];
+            for (size_t i = 0; i < std::min(render_data->anomalies.size(), (size_t)5); ++i) {
+                auto& a = render_data->anomalies[i];
                 ImGui::PushStyleColor(ImGuiCol_Text, severityColor(a.severity));
                 ImGui::BulletText("[%s] %.1f", a.type.c_str(), a.risk_score);
                 ImGui::PopStyleColor();
@@ -833,7 +904,6 @@ int main(int argc, char* argv[]) {
         // ── Row 3: Analysis Explanations + Incident Timeline ───────────────
         {
             float analysis_w = panel_w * 0.55f - 5.0f;
-            float timeline_w = panel_w * 0.45f - 5.0f;
             float r3_h = row3_h;
 
             // ── Analysis Explanation Panel ─────────────────────────────────
@@ -842,11 +912,11 @@ int main(int argc, char* argv[]) {
             ImGui::Text("> ANALYSIS REPORTS");
             ImGui::PopStyleColor();
 
-            if (data.analysis_events.empty()) {
+            if (render_data->analysis_events.empty()) {
                 ImGui::TextDisabled("No analysis events yet — waiting for anomalies...");
             } else {
-                for (size_t i = 0; i < std::min(data.analysis_events.size(), (size_t)5); ++i) {
-                    auto& ev = data.analysis_events[i];
+                for (size_t i = 0; i < std::min(render_data->analysis_events.size(), (size_t)5); ++i) {
+                    auto& ev = render_data->analysis_events[i];
                     char ts_buf[16];
                     formatTimestamp(ev.timestamp, ts_buf, sizeof(ts_buf));
 
@@ -880,7 +950,7 @@ int main(int argc, char* argv[]) {
                         ImGui::PopStyleColor();
                     }
                     ImGui::Spacing();
-                    if (i < std::min(data.analysis_events.size(), (size_t)5) - 1) {
+                    if (i < std::min(render_data->analysis_events.size(), (size_t)5) - 1) {
                         ImGui::Separator();
                     }
                 }
@@ -895,10 +965,10 @@ int main(int argc, char* argv[]) {
             ImGui::Text("> INCIDENT TIMELINE");
             ImGui::PopStyleColor();
 
-            if (data.incidents.empty()) {
+            if (render_data->incidents.empty()) {
                 ImGui::TextDisabled("No incidents recorded yet.");
             } else {
-                for (auto& inc : data.incidents) {
+                for (auto& inc : render_data->incidents) {
                     char start_buf[16], end_buf[16];
                     formatTimestamp(inc.start_time, start_buf, sizeof(start_buf));
 
@@ -942,7 +1012,7 @@ int main(int argc, char* argv[]) {
         {
             ImGui::BeginChild("##ProcPanel", ImVec2(-1, 0), true);
             ImGui::PushStyleColor(ImGuiCol_Text, kAccentPink);
-            ImGui::Text("> TOP PROCESSES (%zu)", data.processes.size());
+            ImGui::Text("> TOP PROCESSES (%zu)", render_data->processes.size());
             ImGui::PopStyleColor();
 
             if (ImGui::BeginTable("##ProcTable", 6,
@@ -961,28 +1031,30 @@ int main(int argc, char* argv[]) {
                 ImGui::TableSetupScrollFreeze(0, 1);
                 ImGui::TableHeadersRow();
 
-                // Handle sorting
+                // Handle sorting (local copy since render_data is const)
+                static std::vector<ProcEntry> sorted_procs;
+                sorted_procs = render_data->processes;
                 if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
-                    if (sort_specs->SpecsDirty && sort_specs->SpecsCount > 0) {
+                    if (sort_specs->SpecsCount > 0) {
                         auto& spec = sort_specs->Specs[0];
                         bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
-                        std::sort(data.processes.begin(), data.processes.end(),
+                        std::sort(sorted_procs.begin(), sorted_procs.end(),
                             [&](const ProcEntry& a, const ProcEntry& b) {
                                 switch (spec.ColumnIndex) {
                                     case 0: return ascending ? a.pid < b.pid : a.pid > b.pid;
                                     case 1: return ascending ? a.name < b.name : a.name > b.name;
                                     case 2: return ascending ? a.user < b.user : a.user > b.user;
                                     case 3: return ascending ? a.state < b.state : a.state > b.state;
-                                    case 4: return ascending ? a.cpu_pct < b.cpu_pct : a.cpu_pct > b.cpu_pct;
-                                    case 5: return ascending ? a.mem_pct < b.mem_pct : a.mem_pct > b.mem_pct;
+                                    case 4: return ascending ? a.cpu_percent < b.cpu_percent : a.cpu_percent > b.cpu_percent;
+                                    case 5: return ascending ? a.mem_percent < b.mem_percent : a.mem_percent > b.mem_percent;
                                     default: return false;
                                 }
                             });
-                        sort_specs->SpecsDirty = false;
                     }
+                    sort_specs->SpecsDirty = false;
                 }
 
-                for (auto& p : data.processes) {
+                for (const auto& p : sorted_procs) {
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
                     ImGui::Text("%d", p.pid);
@@ -993,13 +1065,13 @@ int main(int argc, char* argv[]) {
                     ImGui::TableSetColumnIndex(3);
                     ImGui::TextUnformatted(p.state.c_str());
                     ImGui::TableSetColumnIndex(4);
-                    if (p.cpu_pct > 5.0) ImGui::PushStyleColor(ImGuiCol_Text, kAccentOrange);
-                    else if (p.cpu_pct > 20.0) ImGui::PushStyleColor(ImGuiCol_Text, kAccentRed);
+                    if (p.cpu_percent > 5.0) ImGui::PushStyleColor(ImGuiCol_Text, kAccentOrange);
+                    else if (p.cpu_percent > 20.0) ImGui::PushStyleColor(ImGuiCol_Text, kAccentRed);
                     else ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
-                    ImGui::Text("%.1f", p.cpu_pct);
+                    ImGui::Text("%.1f", p.cpu_percent);
                     ImGui::PopStyleColor();
                     ImGui::TableSetColumnIndex(5);
-                    ImGui::Text("%.1f", p.mem_pct);
+                    ImGui::Text("%.1f", p.mem_percent);
                 }
 
                 ImGui::EndTable();
@@ -1019,15 +1091,15 @@ int main(int argc, char* argv[]) {
     }
 
     // ── Cleanup ────────────────────────────────────────────────────────────
+    run_poller = false;
+    if (poller.joinable()) poller.join();
+
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
-
-    run_poller = false;
-    if (poller.joinable()) poller.join();
 
     return 0;
 }

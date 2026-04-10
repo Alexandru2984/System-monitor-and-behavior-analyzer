@@ -4,7 +4,6 @@
 
 #include "analyzer/explainer.h"
 
-#include <chrono>
 #include <ctime>
 #include <format>
 #include <sstream>
@@ -21,11 +20,13 @@ std::string Explainer::explain(
 
     std::ostringstream out;
 
-    // Timestamp header
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
+    // Timestamp header — use the event timestamp, not the current wall clock,
+    // so that replayed / imported data shows the correct time.
+    int64_t event_ts = !anomalies.empty() ? anomalies[0].timestamp :
+                       !patterns.empty()  ? patterns[0].timestamp : 0;
+    std::time_t event_sec = static_cast<std::time_t>(event_ts / 1000);
     struct tm tm_buf;
-    localtime_r(&time_t, &tm_buf);
+    localtime_r(&event_sec, &tm_buf);
     char time_str[32];
     strftime(time_str, sizeof(time_str), "%H:%M:%S", &tm_buf);
 
@@ -72,10 +73,9 @@ std::string Explainer::explainAnomaly(const AnomalyEvent& a,
     else if (a.metric_type == "memory") baseline_key = "mem_usage";
     else if (a.metric_type == "network") baseline_key = "net_rx";
 
-    if (bm.has(baseline_key)) {
-        auto& bl = bm.get(baseline_key);
-        auto lw = bl.longWindow();
-        auto sw = bl.shortWindow();
+    if (const auto* bl = bm.find(baseline_key)) {
+        auto lw = bl->longWindow();
+        auto sw = bl->shortWindow();
 
         if (lw.ready && lw.sigma > 0) {
             // Compute how many sigma away from baseline
@@ -88,11 +88,11 @@ std::string Explainer::explainAnomaly(const AnomalyEvent& a,
                                lw.mean, lw.sigma, lw.min_val, lw.max_val);
             out << std::format("  P95: {:.1f}  |  P99: {:.1f}\n", lw.p95, lw.p99);
 
-            // Trend info
-            double trend = bl.trend();
-            if (std::abs(trend) > 0.1) {
-                out << std::format("  Trend: {} ({:+.2f}/sample)\n",
-                    trend > 0 ? "^ increasing" : "v decreasing", trend);
+            // Trend info (normalized: 0.01 = 1% relative change per sample)
+            double trend = bl->trend();
+            if (std::abs(trend) > 0.002) {
+                out << std::format("  Trend: {} ({:+.1f}%/sample)\n",
+                    trend > 0 ? "^ increasing" : "v decreasing", trend * 100.0);
             }
         }
     }

@@ -38,6 +38,10 @@ void SqliteStorage::initialize() {
     }
 
     // ── Performance pragmas ────────────────────────────────────────────────
+    // Busy timeout: wait up to 5s if another connection holds a lock
+    // (EventTimeline opens its own connection to the same DB).
+    sqlite3_busy_timeout(db_, 5000);
+
     // WAL mode: lets readers proceed while a writer is active (huge win for
     // our use case where collection writes while analysis reads).
     exec("PRAGMA journal_mode=WAL;");
@@ -249,8 +253,8 @@ std::vector<CpuSnapshot> SqliteStorage::queryCpu(int64_t from, int64_t to) {
     const char* sql = "SELECT timestamp, usage_pct FROM cpu_metrics "
                       "WHERE core_id = -1 AND timestamp BETWEEN ? AND ? "
                       "ORDER BY timestamp;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return results;
     sqlite3_bind_int64(stmt, 1, from);
     sqlite3_bind_int64(stmt, 2, to);
 
@@ -271,8 +275,8 @@ std::vector<MemorySnapshot> SqliteStorage::queryMemory(int64_t from, int64_t to)
     const char* sql = "SELECT timestamp, total_kb, used_kb, avail_kb, usage_pct "
                       "FROM memory_metrics WHERE timestamp BETWEEN ? AND ? "
                       "ORDER BY timestamp;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return results;
     sqlite3_bind_int64(stmt, 1, from);
     sqlite3_bind_int64(stmt, 2, to);
 
@@ -296,8 +300,8 @@ std::vector<NetworkSnapshot> SqliteStorage::queryNetwork(int64_t from, int64_t t
     const char* sql = "SELECT timestamp, interface, rx_bytes, tx_bytes, "
                       "rx_rate_kbps, tx_rate_kbps FROM network_metrics "
                       "WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return results;
     sqlite3_bind_int64(stmt, 1, from);
     sqlite3_bind_int64(stmt, 2, to);
 
@@ -305,7 +309,8 @@ std::vector<NetworkSnapshot> SqliteStorage::queryNetwork(int64_t from, int64_t t
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         int64_t ts = sqlite3_column_int64(stmt, 0);
         InterfaceStats iface;
-        iface.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        auto name_txt = sqlite3_column_text(stmt, 1);
+        iface.name = name_txt ? reinterpret_cast<const char*>(name_txt) : "";
         iface.rx_bytes = static_cast<uint64_t>(sqlite3_column_int64(stmt, 2));
         iface.tx_bytes = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
         iface.rx_rate_kbps = sqlite3_column_double(stmt, 4);

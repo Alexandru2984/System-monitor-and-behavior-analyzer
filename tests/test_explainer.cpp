@@ -33,8 +33,7 @@ TEST_F(ExplainerTest, ReturnsEmptyForNoEvents) {
 
 TEST_F(ExplainerTest, ContainsAnomalyDescription) {
     std::vector<AnomalyEvent> anomalies = {{
-        .timestamp = 1000, .metric_type = "cpu",
-        .description = "CPU spike: 95.0%", .severity = 0.8, .risk_score = 30.0
+        {1000, "cpu", "CPU spike: 95.0%"}, 0.8, 30.0
     }};
     CpuSnapshot snap{.timestamp = 1000, .core_usage_percent = {95.0},
                      .total_usage_percent = 95.0};
@@ -49,8 +48,7 @@ TEST_F(ExplainerTest, ContainsAnomalyDescription) {
 
 TEST_F(ExplainerTest, ContainsSeverityLabel) {
     std::vector<AnomalyEvent> anomalies = {{
-        .timestamp = 1000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.9, .risk_score = 50.0
+        {1000, "cpu", "spike"}, 0.9, 50.0
     }};
     CpuSnapshot snap{.timestamp = 1000, .core_usage_percent = {95.0},
                      .total_usage_percent = 95.0};
@@ -68,8 +66,7 @@ TEST_F(ExplainerTest, ContainsBaselineContext) {
     }
 
     std::vector<AnomalyEvent> anomalies = {{
-        .timestamp = 1000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.5, .risk_score = 20.0
+        {1000, "cpu", "spike"}, 0.5, 20.0
     }};
     CpuSnapshot snap{.timestamp = 1000, .core_usage_percent = {90.0},
                      .total_usage_percent = 90.0};
@@ -83,9 +80,8 @@ TEST_F(ExplainerTest, ContainsBaselineContext) {
 
 TEST_F(ExplainerTest, ContainsPatternInfo) {
     std::vector<PatternEvent> patterns = {{
-        .timestamp = 1000, .type = PatternType::SustainedHighLoad,
-        .metric_type = "cpu", .description = "sustained above P95",
-        .confidence = 0.9
+        {1000, "cpu", "sustained above P95"},
+        PatternType::SustainedHighLoad, 0.9
     }};
     CpuSnapshot snap{.timestamp = 1000, .core_usage_percent = {90.0},
                      .total_usage_percent = 90.0};
@@ -109,9 +105,8 @@ TEST_F(ExplainerTest, ShowsTopProcessConsumers) {
     MetricSnapshot ms = snap;
 
     std::vector<PatternEvent> patterns = {{
-        .timestamp = 1000, .type = PatternType::NewProcess,
-        .metric_type = "process", .description = "new proc",
-        .confidence = 0.6
+        {1000, "process", "new proc"},
+        PatternType::NewProcess, 0.6
     }};
 
     auto result = explainer.explain({}, patterns, ms, baselines);
@@ -122,9 +117,8 @@ TEST_F(ExplainerTest, ShowsTopProcessConsumers) {
 
 TEST_F(ExplainerTest, ConfidenceBarRendered) {
     std::vector<PatternEvent> patterns = {{
-        .timestamp = 1000, .type = PatternType::Trend,
-        .metric_type = "cpu", .description = "trending",
-        .confidence = 0.7
+        {1000, "cpu", "trending"},
+        PatternType::Trend, 0.7
     }};
     CpuSnapshot snap{.timestamp = 1000, .core_usage_percent = {50.0},
                      .total_usage_percent = 50.0};

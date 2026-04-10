@@ -29,7 +29,8 @@ public:
 private:
     // One set of jiffy readings per core (index 0 = aggregate "cpu" line)
     struct CpuTimes {
-        long user, nice, system, idle, iowait, irq, softirq, steal;
+        long user = 0, nice = 0, system = 0, idle = 0;
+        long iowait = 0, irq = 0, softirq = 0, steal = 0;
 
         long activeTime() const {
             return user + nice + system + irq + softirq + steal;
@@ -41,6 +42,9 @@ private:
 
     /// Parse all "cpu" lines from /proc/stat
     static std::vector<CpuTimes> readProcStat();
+
+    /// Previous sample stored between calls (eliminates 100ms sleep)
+    std::vector<CpuTimes> prev_times_;
 };
 
 } // namespace sysmon

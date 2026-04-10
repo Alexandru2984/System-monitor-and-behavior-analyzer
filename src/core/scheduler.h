@@ -18,10 +18,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "collectors/collector.h"
-#include "storage/storage_engine.h"
+#include "storage/sqlite_storage.h"
 #include "analyzer/analyzer.h"
 #include "core/config.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -31,7 +32,7 @@ namespace sysmon {
 
 class Scheduler {
 public:
-    Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config);
+    Scheduler(std::shared_ptr<SqliteStorage> storage, const Config& config);
 
     /// Register a collector with its sampling interval.
     void addCollector(std::shared_ptr<ICollector> collector,
@@ -55,13 +56,13 @@ private:
         std::chrono::milliseconds interval;
     };
 
-    std::shared_ptr<IStorageEngine> storage_;
+    std::shared_ptr<SqliteStorage> storage_;
     Config config_;
     Analyzer analyzer_;
 
     std::vector<ScheduledTask> tasks_;
     std::vector<std::jthread> threads_;
-    bool running_ = false;
+    std::atomic<bool> running_ = false;
 
     void collectionLoop(std::stop_token stop_token, ScheduledTask task);
 };

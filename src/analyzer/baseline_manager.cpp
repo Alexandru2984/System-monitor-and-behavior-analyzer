@@ -122,6 +122,7 @@ double MetricBaseline::anomalyThreshold(double sigma_multiplier, double sigma_fl
 void MetricBaseline::updateTrend() {
     // Simple linear regression on the short buffer
     // slope = Σ((x - x̄)(y - ȳ)) / Σ((x - x̄)²)
+    // Normalized by mean so the slope is in relative units (comparable across metrics).
     if (short_buf_.size() < 10) {
         trend_slope_ = 0.0;
         return;
@@ -140,7 +141,15 @@ void MetricBaseline::updateTrend() {
         den += dx * dx;
     }
 
-    trend_slope_ = (den > 0) ? num / den : 0.0;
+    double raw_slope = (den > 0) ? num / den : 0.0;
+
+    // Normalize: divide by mean so 0.01 = 1% change per sample.
+    // Guard against near-zero mean to avoid division blow-up.
+    if (std::abs(y_mean) > 1e-6) {
+        trend_slope_ = raw_slope / std::abs(y_mean);
+    } else {
+        trend_slope_ = raw_slope;
+    }
 }
 
 int MetricBaseline::oscillationCount() const {
@@ -172,18 +181,17 @@ bool MetricBaseline::isMonotonicallyIncreasing(int samples) const {
     int start = static_cast<int>(short_buf_.size()) - n;
     int increases = 0;
     for (int i = start + 1; i < static_cast<int>(short_buf_.size()); ++i) {
-        if (short_buf_[static_cast<size_t>(i)] >= short_buf_[static_cast<size_t>(i - 1)]) {
+        if (short_buf_[static_cast<size_t>(i)] > short_buf_[static_cast<size_t>(i - 1)]) {
             increases++;
         }
     }
 
-    // Allow up to 10% non-increasing samples (noise tolerance)
+    // Allow up to 10% non-increasing samples (noise tolerance),
+    // but require strict increases to avoid false positives on constant values.
     return increases >= static_cast<int>((n - 1) * 0.9);
 }
 
 // ── BaselineManager ─────────────────────────────────────────────────────────
-
-const MetricBaseline BaselineManager::kEmpty{};
 
 void BaselineManager::update(const std::string& metric_name, double value) {
     get(metric_name).update(value);
@@ -197,9 +205,9 @@ MetricBaseline& BaselineManager::get(const std::string& metric_name) {
     return it->second;
 }
 
-const MetricBaseline& BaselineManager::get(const std::string& metric_name) const {
+const MetricBaseline* BaselineManager::find(const std::string& metric_name) const {
     auto it = baselines_.find(metric_name);
-    return it != baselines_.end() ? it->second : kEmpty;
+    return it != baselines_.end() ? &it->second : nullptr;
 }
 
 bool BaselineManager::has(const std::string& metric_name) const {

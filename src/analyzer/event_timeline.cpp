@@ -5,6 +5,7 @@
 #include "analyzer/event_timeline.h"
 #include "utils/logger.h"
 
+#include <chrono>
 #include <stdexcept>
 
 namespace sysmon {
@@ -13,6 +14,13 @@ EventTimeline::EventTimeline(const std::string& db_path)
     : db_path_(db_path) {}
 
 EventTimeline::~EventTimeline() {
+    // Close any active incident before shutting down so it doesn't remain
+    // stuck with is_active=1 across restarts.
+    if (db_ && active_incident_id_ >= 0) {
+        auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        closeActiveIncident(now);
+    }
     if (db_) sqlite3_close(db_);
 }
 
@@ -61,6 +69,10 @@ void EventTimeline::initialize() {
         );
         CREATE INDEX IF NOT EXISTS idx_incidents_ts ON incidents(start_time);
     )SQL");
+
+    // Close any stale incidents left active from a previous unclean shutdown
+    exec("UPDATE incidents SET is_active = 0, summary = 'Closed on restart (unclean shutdown)' "
+         "WHERE is_active = 1;");
 }
 
 void EventTimeline::record(const AnalysisReport& report) {
@@ -89,8 +101,8 @@ void EventTimeline::record(const AnalysisReport& report) {
     const char* sql = "INSERT INTO analysis_events "
                       "(timestamp, anomaly_count, pattern_count, risk_total, "
                       "explanation, incident_id) VALUES (?,?,?,?,?,?);";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
     sqlite3_bind_int64(stmt, 1, report.timestamp);
     sqlite3_bind_int(stmt, 2, static_cast<int>(report.anomalies.size()));
     sqlite3_bind_int(stmt, 3, static_cast<int>(report.patterns.size()));
@@ -110,8 +122,8 @@ void EventTimeline::openOrExtendIncident(const AnalysisReport& report) {
         const char* sql = "INSERT INTO incidents "
                           "(start_time, peak_risk, event_count, is_active) "
                           "VALUES (?,?,1,1);";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
         sqlite3_bind_int64(stmt, 1, report.timestamp);
         sqlite3_bind_double(stmt, 2, report.risk.total);
         sqlite3_step(stmt);
@@ -125,8 +137,8 @@ void EventTimeline::openOrExtendIncident(const AnalysisReport& report) {
                           "peak_risk = MAX(peak_risk, ?), "
                           "event_count = event_count + 1 "
                           "WHERE id = ?;";
-        sqlite3_stmt* stmt;
-        sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
         sqlite3_bind_double(stmt, 1, report.risk.total);
         sqlite3_bind_int64(stmt, 2, active_incident_id_);
         sqlite3_step(stmt);
@@ -141,8 +153,11 @@ void EventTimeline::closeActiveIncident(int64_t end_time) {
     const char* summary_sql =
         "SELECT COUNT(*) as cnt, MAX(risk_total) as peak "
         "FROM analysis_events WHERE incident_id = ?;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, summary_sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, summary_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        active_incident_id_ = -1;
+        return;
+    }
     sqlite3_bind_int64(stmt, 1, active_incident_id_);
 
     std::string summary = "Incident resolved";
@@ -158,7 +173,10 @@ void EventTimeline::closeActiveIncident(int64_t end_time) {
     const char* close_sql = "UPDATE incidents SET "
                             "end_time = ?, summary = ?, is_active = 0 "
                             "WHERE id = ?;";
-    sqlite3_prepare_v2(db_, close_sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, close_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        active_incident_id_ = -1;
+        return;
+    }
     sqlite3_bind_int64(stmt, 1, end_time);
     sqlite3_bind_text(stmt, 2, summary.c_str(),
                       static_cast<int>(summary.size()), SQLITE_TRANSIENT);
@@ -178,8 +196,8 @@ std::vector<Incident> EventTimeline::getIncidents(int64_t from_ts, int64_t to_ts
                       "event_count, is_active FROM incidents "
                       "WHERE start_time >= ? AND start_time <= ? "
                       "ORDER BY start_time DESC;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return results;
     sqlite3_bind_int64(stmt, 1, from_ts);
     sqlite3_bind_int64(stmt, 2, to_ts);
 
@@ -205,8 +223,8 @@ Incident EventTimeline::getActiveIncident() {
 
     const char* sql = "SELECT id, start_time, end_time, summary, peak_risk, "
                       "event_count FROM incidents WHERE is_active = 1 LIMIT 1;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return inc;
 
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         inc.id = sqlite3_column_int64(stmt, 0);
@@ -229,8 +247,8 @@ std::vector<AnalysisReport> EventTimeline::getRecentEvents(int limit) {
     const char* sql = "SELECT timestamp, anomaly_count, pattern_count, "
                       "risk_total, explanation FROM analysis_events "
                       "ORDER BY timestamp DESC LIMIT ?;";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return results;
     sqlite3_bind_int(stmt, 1, limit);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {

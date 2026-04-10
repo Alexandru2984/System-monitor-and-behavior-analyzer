@@ -10,7 +10,7 @@
 
 namespace sysmon {
 
-Scheduler::Scheduler(std::shared_ptr<IStorageEngine> storage, const Config& config)
+Scheduler::Scheduler(std::shared_ptr<SqliteStorage> storage, const Config& config)
     : storage_(std::move(storage))
     , config_(config)
     , analyzer_(config.db_path, config.anomaly_sigma, config.ema_alpha)
@@ -36,6 +36,30 @@ void Scheduler::start() {
             },
             task
         );
+    }
+
+    // Periodic data pruning thread
+    if (config_.retention_hours > 0) {
+        threads_.emplace_back([this](std::stop_token st) {
+            LOG_INFO("Prune thread started (retention: {}h)", config_.retention_hours);
+            std::mutex mtx;
+            std::condition_variable_any cv;
+            while (!st.stop_requested()) {
+                try {
+                    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    int64_t cutoff = now_ms - static_cast<int64_t>(config_.retention_hours) * 3600 * 1000;
+                    storage_->pruneOlderThan(cutoff);
+                } catch (const std::exception& e) {
+                    LOG_ERROR("Prune error: {}", e.what());
+                }
+                // Prune every 5 minutes
+                std::unique_lock<std::mutex> lock(mtx);
+                cv.wait_for(lock, std::chrono::minutes(5), [&] {
+                    return st.stop_requested();
+                });
+            }
+        });
     }
 }
 

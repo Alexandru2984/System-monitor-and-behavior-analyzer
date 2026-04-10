@@ -6,13 +6,14 @@
 // Unlike the simple BaselineCalculator (single EMA), BaselineManager maintains
 // TWO statistical windows per metric:
 //
-//   SHORT window (60 samples ≈ 1 minute):
+//   SHORT window (60-sample buffer, fast EMA):
 //     - Reacts fast to state changes
 //     - Used for trend detection and oscillation analysis
 //
-//   LONG window (600 samples ≈ 10 minutes):
+//   LONG window (EMA-only, no buffer; effective window ≈ 1/alpha samples):
 //     - Stable reference baseline
 //     - Used for anomaly thresholds (less prone to false positives)
+//     - P95/P99 estimated from a 100-sample circular buffer
 //
 // Both windows track: mean (EMA), running stddev, min, max.
 // The long window also estimates P95/P99 using a lightweight approach:
@@ -112,7 +113,9 @@ public:
 
     /// Get a metric's baseline (creates if not exists)
     MetricBaseline& get(const std::string& metric_name);
-    const MetricBaseline& get(const std::string& metric_name) const;
+
+    /// Get a metric's baseline (const; returns nullptr if not found)
+    const MetricBaseline* find(const std::string& metric_name) const;
 
     bool has(const std::string& metric_name) const;
 
@@ -120,8 +123,6 @@ private:
     double short_alpha_;
     double long_alpha_;
     std::unordered_map<std::string, MetricBaseline> baselines_;
-    // Dummy for const access to non-existent metrics
-    static const MetricBaseline kEmpty;
 };
 
 } // namespace sysmon

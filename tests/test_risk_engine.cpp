@@ -20,11 +20,7 @@ TEST(RiskEngineTest, ZeroRiskWithNoAnomalies) {
 TEST(RiskEngineTest, SeverityScalesWithAnomaly) {
     RiskEngine engine;
     std::vector<AnomalyEvent> anomalies = {{
-        .timestamp = 1000,
-        .metric_type = "cpu",
-        .description = "CPU spike",
-        .severity = 0.8,
-        .risk_score = 0.0
+        {1000, "cpu", "CPU spike"}, 0.8, 0.0
     }};
     std::vector<PatternEvent> patterns;
 
@@ -36,11 +32,7 @@ TEST(RiskEngineTest, SeverityScalesWithAnomaly) {
 TEST(RiskEngineTest, HighSeverityGivesHighRisk) {
     RiskEngine engine;
     std::vector<AnomalyEvent> anomalies = {{
-        .timestamp = 1000,
-        .metric_type = "cpu",
-        .description = "spike",
-        .severity = 1.0,
-        .risk_score = 0.0
+        {1000, "cpu", "spike"}, 1.0, 0.0
     }};
 
     auto risk = engine.evaluate(anomalies, {}, 1000);
@@ -53,18 +45,15 @@ TEST(RiskEngineTest, BreadthIncreasesSWithMultipleMetrics) {
 
     // First call: single metric
     std::vector<AnomalyEvent> single = {{
-        .timestamp = 1000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.5, .risk_score = 0.0
+        {1000, "cpu", "spike"}, 0.5, 0.0
     }};
     auto risk1 = engine.evaluate(single, {}, 1000);
 
     // Second call: two metrics simultaneously (reset engine)
     RiskEngine engine2;
     std::vector<AnomalyEvent> multi = {
-        {.timestamp = 1000, .metric_type = "cpu",
-         .description = "spike", .severity = 0.5, .risk_score = 0.0},
-        {.timestamp = 1000, .metric_type = "memory",
-         .description = "pressure", .severity = 0.5, .risk_score = 0.0}
+        {{1000, "cpu", "spike"}, 0.5, 0.0},
+        {{1000, "memory", "pressure"}, 0.5, 0.0}
     };
     auto risk2 = engine2.evaluate(multi, {}, 1000);
 
@@ -79,19 +68,14 @@ TEST(RiskEngineTest, PersistenceGrowsWithRepeatedAnomalies) {
     // Feed anomalies over 30 "seconds"
     for (int i = 0; i < 30; ++i) {
         std::vector<AnomalyEvent> anomalies = {{
-            .timestamp = static_cast<int64_t>(i * 1000),
-            .metric_type = "cpu",
-            .description = "spike",
-            .severity = 0.5,
-            .risk_score = 0.0
+            {static_cast<int64_t>(i * 1000), "cpu", "spike"}, 0.5, 0.0
         }};
         engine.evaluate(anomalies, patterns, i * 1000);
     }
 
     // Last evaluation should show high persistence
     std::vector<AnomalyEvent> last = {{
-        .timestamp = 30000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.5, .risk_score = 0.0
+        {30000, "cpu", "spike"}, 0.5, 0.0
     }};
     auto risk = engine.evaluate(last, patterns, 30000);
     EXPECT_GT(risk.persistence_score, 30.0);
@@ -102,27 +86,21 @@ TEST(RiskEngineTest, FamiliarityReducesRiskOverTime) {
 
     // First anomaly: completely new → high familiarity_score (unfamiliar)
     std::vector<AnomalyEvent> first = {{
-        .timestamp = 1000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.5, .risk_score = 0.0
+        {1000, "cpu", "spike"}, 0.5, 0.0
     }};
     auto risk1 = engine.evaluate(first, {}, 1000);
 
     // Feed many similar anomalies
     for (int i = 2; i < 25; ++i) {
         std::vector<AnomalyEvent> a = {{
-            .timestamp = static_cast<int64_t>(i * 1000),
-            .metric_type = "cpu",
-            .description = "spike",
-            .severity = 0.5,
-            .risk_score = 0.0
+            {static_cast<int64_t>(i * 1000), "cpu", "spike"}, 0.5, 0.0
         }};
         engine.evaluate(a, {}, i * 1000);
     }
 
     // Now same anomaly should be "familiar" → lower familiarity_score
     std::vector<AnomalyEvent> last = {{
-        .timestamp = 25000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.5, .risk_score = 0.0
+        {25000, "cpu", "spike"}, 0.5, 0.0
     }};
     auto risk2 = engine.evaluate(last, {}, 25000);
     EXPECT_LT(risk2.familiarity_score, risk1.familiarity_score);
@@ -131,8 +109,7 @@ TEST(RiskEngineTest, FamiliarityReducesRiskOverTime) {
 TEST(RiskEngineTest, RecencyHighForVeryRecentAnomaly) {
     RiskEngine engine;
     std::vector<AnomalyEvent> anomalies = {{
-        .timestamp = 10000, .metric_type = "cpu",
-        .description = "spike", .severity = 0.5, .risk_score = 0.0
+        {10000, "cpu", "spike"}, 0.5, 0.0
     }};
 
     // current_time = anomaly time + 1s → very recent
@@ -146,18 +123,13 @@ TEST(RiskEngineTest, TotalRiskCappedAt100) {
     // Feed extreme anomalies repeatedly
     for (int i = 0; i < 60; ++i) {
         std::vector<AnomalyEvent> a = {{
-            .timestamp = static_cast<int64_t>(i * 1000),
-            .metric_type = "cpu",
-            .description = "extreme",
-            .severity = 1.0,
-            .risk_score = 0.0
+            {static_cast<int64_t>(i * 1000), "cpu", "extreme"}, 1.0, 0.0
         }};
         engine.evaluate(a, {}, i * 1000);
     }
 
     std::vector<AnomalyEvent> last = {{
-        .timestamp = 60000, .metric_type = "cpu",
-        .description = "extreme", .severity = 1.0, .risk_score = 0.0
+        {60000, "cpu", "extreme"}, 1.0, 0.0
     }};
     auto risk = engine.evaluate(last, {}, 60000);
     EXPECT_LE(risk.total, 100.0);

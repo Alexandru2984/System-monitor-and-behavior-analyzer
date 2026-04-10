@@ -35,13 +35,10 @@ std::vector<PatternEvent> PatternDetector::detectCpuPatterns(
     // Sustained high load
     if (bl.isSustainedHigh(5)) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::SustainedHighLoad,
-            .metric_type = "cpu",
-            .description = std::format(
+            {s.timestamp, "cpu", std::format(
                 "CPU sustained above P95 for {}+ consecutive samples (current: {:.1f}%)",
-                5, s.total_usage_percent),
-            .confidence = 0.9
+                5, s.total_usage_percent)},
+            PatternType::SustainedHighLoad, 0.9
         });
     }
 
@@ -49,26 +46,21 @@ std::vector<PatternEvent> PatternDetector::detectCpuPatterns(
     int osc = bl.oscillationCount();
     if (osc > 15) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::Oscillation,
-            .metric_type = "cpu",
-            .description = std::format(
+            {s.timestamp, "cpu", std::format(
                 "CPU oscillating rapidly ({} mean-crossings in short window)",
-                osc),
-            .confidence = std::min(1.0, osc / 30.0)
+                osc)},
+            PatternType::Oscillation, std::min(1.0, osc / 30.0)
         });
     }
 
-    // Upward trend
+    // Upward trend (slope is normalized: 0.01 = 1% relative change per sample)
     double slope = bl.trend();
-    if (slope > 0.5 && bl.shortWindow().count > 20) {
+    if (slope > 0.01 && bl.shortWindow().count > 20) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::Trend,
-            .metric_type = "cpu",
-            .description = std::format(
-                "CPU usage trending upward (slope: {:.2f}%/sample)", slope),
-            .confidence = std::min(1.0, slope / 2.0)
+            {s.timestamp, "cpu", std::format(
+                "CPU usage trending upward (slope: {:.4f}/sample, ~{:.1f}%/sample)",
+                slope, slope * 100.0)},
+            PatternType::Trend, std::min(1.0, slope / 0.04)
         });
     }
 
@@ -84,40 +76,32 @@ std::vector<PatternEvent> PatternDetector::detectMemoryPatterns(
     // Sustained high memory
     if (bl.isSustainedHigh(10)) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::SustainedHighLoad,
-            .metric_type = "memory",
-            .description = std::format(
+            {s.timestamp, "memory", std::format(
                 "Memory sustained above P95 for 10+ samples (current: {:.1f}%)",
-                s.usage_percent),
-            .confidence = 0.85
+                s.usage_percent)},
+            PatternType::SustainedHighLoad, 0.85
         });
     }
 
     // Memory leak detection — monotonically increasing
     if (bl.isMonotonicallyIncreasing(30)) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::MemoryLeak,
-            .metric_type = "memory",
-            .description = std::format(
+            {s.timestamp, "memory", std::format(
                 "Possible memory leak: usage monotonically increasing for 30+ "
                 "samples ({:.1f}% → {:.1f}%)",
-                bl.shortWindow().min_val, s.usage_percent),
-            .confidence = 0.7
+                bl.shortWindow().min_val, s.usage_percent)},
+            PatternType::MemoryLeak, 0.7
         });
     }
 
-    // Upward trend
+    // Upward trend (slope is normalized: 0.01 = 1% relative change per sample)
     double slope = bl.trend();
-    if (slope > 0.1 && bl.shortWindow().count > 20) {
+    if (slope > 0.002 && bl.shortWindow().count > 20) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::Trend,
-            .metric_type = "memory",
-            .description = std::format(
-                "Memory usage trending upward (slope: {:.3f}%/sample)", slope),
-            .confidence = std::min(1.0, slope / 0.5)
+            {s.timestamp, "memory", std::format(
+                "Memory usage trending upward (slope: {:.4f}/sample, ~{:.1f}%/sample)",
+                slope, slope * 100.0)},
+            PatternType::Trend, std::min(1.0, slope / 0.01)
         });
     }
 
@@ -136,24 +120,18 @@ std::vector<PatternEvent> PatternDetector::detectNetworkPatterns(
 
     if (bl.isSustainedHigh(5)) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::SustainedHighLoad,
-            .metric_type = "network",
-            .description = std::format(
-                "Network RX sustained above P95 ({:.1f} kbps)", total_rx),
-            .confidence = 0.8
+            {s.timestamp, "network", std::format(
+                "Network RX sustained above P95 ({:.1f} kbps)", total_rx)},
+            PatternType::SustainedHighLoad, 0.8
         });
     }
 
     int osc = bl.oscillationCount();
     if (osc > 20) {
         events.push_back(PatternEvent{
-            .timestamp = s.timestamp,
-            .type = PatternType::Oscillation,
-            .metric_type = "network",
-            .description = std::format(
-                "Network traffic oscillating ({} crossings)", osc),
-            .confidence = std::min(1.0, osc / 40.0)
+            {s.timestamp, "network", std::format(
+                "Network traffic oscillating ({} crossings)", osc)},
+            PatternType::Oscillation, std::min(1.0, osc / 40.0)
         });
     }
 
@@ -177,13 +155,10 @@ std::vector<PatternEvent> PatternDetector::detectProcessPatterns(
                 // Only report if it's consuming resources
                 if (p.cpu_percent > 2.0 || p.mem_percent > 1.0) {
                     events.push_back(PatternEvent{
-                        .timestamp = s.timestamp,
-                        .type = PatternType::NewProcess,
-                        .metric_type = "process",
-                        .description = std::format(
+                        {s.timestamp, "process", std::format(
                             "New process: '{}' (PID {}, CPU: {:.1f}%, MEM: {:.1f}%)",
-                            p.name, p.pid, p.cpu_percent, p.mem_percent),
-                        .confidence = 0.6
+                            p.name, p.pid, p.cpu_percent, p.mem_percent)},
+                        PatternType::NewProcess, 0.6
                     });
                 }
             }
@@ -195,12 +170,9 @@ std::vector<PatternEvent> PatternDetector::detectProcessPatterns(
                 // We don't have info about the old process anymore,
                 // so we just note it disappeared
                 events.push_back(PatternEvent{
-                    .timestamp = s.timestamp,
-                    .type = PatternType::DisappearedProcess,
-                    .metric_type = "process",
-                    .description = std::format(
-                        "Process PID {} disappeared", old_pid),
-                    .confidence = 0.4
+                    {s.timestamp, "process", std::format(
+                        "Process PID {} disappeared", old_pid)},
+                    PatternType::DisappearedProcess, 0.4
                 });
             }
         }

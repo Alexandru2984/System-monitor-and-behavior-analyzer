@@ -77,11 +77,15 @@ using MetricSnapshot = std::variant<
     NetworkSnapshot
 >;
 
-// ── Anomaly event (produced by the analysis layer) ─────────────────────────
-struct AnomalyEvent {
+// ── Base event (common fields for all analysis events) ─────────────────────
+struct BaseEvent {
     int64_t timestamp;
     std::string metric_type;   // "cpu", "memory", "network", "process"
-    std::string description;
+    std::string description;   // human-readable
+};
+
+// ── Anomaly event (produced by the analysis layer) ─────────────────────────
+struct AnomalyEvent : BaseEvent {
     double severity;           // 0.0 – 1.0
     double risk_score;         // 0 – 100 composite
 };
@@ -96,11 +100,8 @@ enum class PatternType {
     DisappearedProcess,  // A process disappeared unexpectedly
 };
 
-struct PatternEvent {
-    int64_t timestamp;
+struct PatternEvent : BaseEvent {
     PatternType type;
-    std::string metric_type;   // which metric triggered this
-    std::string description;   // human-readable
     double confidence;         // 0.0 – 1.0
 };
 

@@ -108,11 +108,8 @@ TEST_F(SqliteStorageTest, AnomalyStorage) {
     storage.initialize();
 
     AnomalyEvent event{
-        .timestamp = 5000,
-        .metric_type = "cpu",
-        .description = "CPU spike: 95.0%",
-        .severity = 0.8,
-        .risk_score = 24.0
+        {5000, "cpu", "CPU spike: 95.0%"},
+        0.8, 24.0
     };
 
     EXPECT_NO_THROW(storage.storeAnomaly(event));

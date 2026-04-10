@@ -22,8 +22,8 @@
 #include "utils/logger.h"
 
 #include <csignal>
-#include <iostream>
 #include <memory>
+#include <unistd.h>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -34,7 +34,11 @@ static std::condition_variable g_cv;
 static std::mutex g_mutex;
 
 static void signalHandler(int signum) {
-    std::cout << "\n[sysmonitor] Received signal " << signum << ", shutting down...\n";
+    // Only use async-signal-safe functions here.
+    // std::cout is NOT safe; use write() instead.
+    const char msg[] = "\n[sysmonitor] Signal received, shutting down...\n";
+    (void)write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    (void)signum;
     g_shutdown.store(true);
     g_cv.notify_all();
 }
@@ -52,6 +56,10 @@ int main(int argc, char* argv[]) {
 
     // Re-init logger with configured settings
     auto level = spdlog::level::from_str(cfg.log_level);
+    if (level == spdlog::level::off && cfg.log_level != "off") {
+        LOG_WARN("Invalid log_level '{}' in config — falling back to 'info'", cfg.log_level);
+        level = spdlog::level::info;
+    }
     sysmon::Logger::init(cfg.log_file, level);
 
     LOG_INFO("═══════════════════════════════════════════════════════════");
@@ -81,8 +89,12 @@ int main(int argc, char* argv[]) {
     scheduler.addCollector(network_collector, cfg.network_interval);
 
     // ── 5. Install signal handlers ─────────────────────────────────────────
-    std::signal(SIGINT,  signalHandler);
-    std::signal(SIGTERM, signalHandler);
+    struct sigaction sa{};
+    sa.sa_handler = signalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 
     // ── 6. Start monitoring ────────────────────────────────────────────────
     scheduler.start();
