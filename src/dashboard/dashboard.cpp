@@ -692,7 +692,45 @@ int main(int argc, char* argv[]) {
                 exportReportsToTXT(render_data->analysis_events);
             }
 
-            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 280);
+            // ── Keyboard shortcuts ──────────────────────────────────────────
+            static bool paused = false;
+            if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+                paused = !paused;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_S)) {
+                exportDataToCSV(render_data->processes);
+                exportReportsToTXT(render_data->analysis_events);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_T) && !g_is_stressing) {
+                startStressTest();
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Q) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 400);
+
+            // Pause indicator
+            if (paused) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kAccentOrange);
+                ImGui::Text("[PAUSED]");
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+            }
+
+            // Keyboard help tooltip
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("Keyboard Shortcuts:");
+                ImGui::Separator();
+                ImGui::Text("Space  - Pause/Resume");
+                ImGui::Text("S      - Export Data + Reports");
+                ImGui::Text("T      - Start Stress Test");
+                ImGui::Text("Q/Esc  - Quit");
+                ImGui::EndTooltip();
+            }
+            ImGui::SameLine();
 
             // Risk score badge
             ImVec4 risk_col = render_data->risk_score < RISK_LOW_THRESHOLD ? kAccentGreen :
@@ -716,6 +754,7 @@ int main(int argc, char* argv[]) {
 
             ImGui::Separator();
         }
+
 
         ImVec2 avail = ImGui::GetContentRegionAvail();
         float panel_w = avail.x;

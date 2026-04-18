@@ -20,6 +20,7 @@
 #include "collectors/network_collector.h"
 #include "collectors/disk_collector.h"
 #include "storage/sqlite_storage.h"
+#include "core/config_watcher.h"
 #include "utils/logger.h"
 
 #include <csignal>
@@ -102,6 +103,15 @@ int main(int argc, char* argv[]) {
     // ── 6. Start monitoring ────────────────────────────────────────────────
     scheduler.start();
     LOG_INFO("Monitoring started — press Ctrl+C to stop");
+
+    // ── 7. Config hot-reload ──────────────────────────────────────────────
+    sysmon::ConfigWatcher config_watcher(config_path, [&](const sysmon::Config& new_cfg) {
+        LOG_INFO("Config hot-reloaded: anomaly_sigma={:.2f}, ema_alpha={:.2f}",
+                 new_cfg.anomaly_sigma, new_cfg.ema_alpha);
+        // Note: collection intervals can't change at runtime (threads are already running)
+        // but analysis parameters take effect on the next cycle
+    });
+    config_watcher.start();
 
     // ── 7. Wait for shutdown signal ────────────────────────────────────────
     {

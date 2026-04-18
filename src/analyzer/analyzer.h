@@ -15,6 +15,7 @@
 
 #include "analyzer/alerter.h"
 #include "analyzer/baseline_manager.h"
+#include "analyzer/correlation_engine.h"
 #include "analyzer/event_timeline.h"
 #include "analyzer/explainer.h"
 #include "analyzer/pattern_detector.h"
@@ -52,6 +53,9 @@ public:
     /// Access alerter for runtime configuration
     Alerter& alerter() { return alerter_; }
 
+    /// Access correlation engine (const — safe for read-only dashboard queries)
+    const CorrelationEngine& correlations() const { return correlator_; }
+
 private:
     BaselineManager baselines_;
     PatternDetector pattern_detector_;
@@ -59,6 +63,7 @@ private:
     RiskEngine risk_engine_;
     EventTimeline timeline_;
     Alerter alerter_;
+    CorrelationEngine correlator_;
 
     double sigma_threshold_;
 

@@ -59,7 +59,20 @@ AnalysisReport Analyzer::analyze(const MetricSnapshot& snapshot) {
     // 6. Record in timeline
     timeline_.record(report);
 
-    // 7. Fire desktop alerts if risk is high
+    // 7. Run cross-metric correlation
+    auto correlations = correlator_.correlate(report, snapshot);
+    if (!correlations.empty()) {
+        // Append correlation insights to explanation
+        report.explanation += "\n\n── CORRELATION ──────────────────────────\n";
+        for (const auto& c : correlations) {
+            report.explanation += c.description + "\n";
+        }
+        // Boost risk score for correlated events
+        report.risk.total = std::min(100.0,
+            report.risk.total * (1.0 + 0.15 * static_cast<double>(correlations[0].correlated_metrics.size())));
+    }
+
+    // 8. Fire desktop alerts if risk is high
     alerter_.check(report);
 
     return report;
