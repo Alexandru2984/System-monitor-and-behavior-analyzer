@@ -69,12 +69,30 @@ struct NetworkSnapshot {
     std::vector<InterfaceStats> interfaces;
 };
 
+// ── Disk I/O ──────────────────────────────────────────────────────────────
+struct DiskDeviceStats {
+    std::string name;           // e.g. "sda", "nvme0n1"
+    uint64_t reads_completed;
+    uint64_t writes_completed;
+    uint64_t sectors_read;
+    uint64_t sectors_written;
+    double read_rate_kbps;      // delta since last sample
+    double write_rate_kbps;
+    double io_util_percent;     // approximate utilization [0..100]
+};
+
+struct DiskSnapshot {
+    int64_t timestamp;
+    std::vector<DiskDeviceStats> devices;
+};
+
 // ── Variant that can hold any snapshot ─────────────────────────────────────
 using MetricSnapshot = std::variant<
     CpuSnapshot,
     MemorySnapshot,
     ProcessSnapshot,
-    NetworkSnapshot
+    NetworkSnapshot,
+    DiskSnapshot
 >;
 
 // ── Base event (common fields for all analysis events) ─────────────────────
@@ -98,6 +116,7 @@ enum class PatternType {
     MemoryLeak,          // Monotonically increasing memory over long window
     NewProcess,          // A process appeared that wasn't in previous snapshot
     DisappearedProcess,  // A process disappeared unexpectedly
+    DiskIOSustainedHigh, // Disk I/O sustained above P95
 };
 
 struct PatternEvent : BaseEvent {

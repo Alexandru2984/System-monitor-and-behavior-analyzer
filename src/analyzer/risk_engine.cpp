@@ -91,15 +91,15 @@ double RiskEngine::computeBreadth(const std::vector<AnomalyEvent>& anomalies,
 double RiskEngine::computeRecency(int64_t current_time) {
     if (history_.empty()) return 0.0;
 
-    // Most recent anomaly: higher score if it happened very recently
-    int64_t most_recent = history_.back().timestamp;
-    int64_t age_ms = current_time - most_recent;
+    // Exponential decay: 100 * exp(-age / τ)
+    // τ = 30s → score halves every ~21 seconds (ln(2) * 30 ≈ 20.8s)
+    static constexpr double TAU_MS = 30'000.0;  // decay time constant
 
-    if (age_ms < 5'000)   return 100.0;  // <5s ago
-    if (age_ms < 30'000)  return 80.0;   // <30s ago
-    if (age_ms < 60'000)  return 50.0;   // <1min ago
-    if (age_ms < 300'000) return 20.0;   // <5min ago
-    return 0.0;                           // >5min ago
+    int64_t most_recent = history_.back().timestamp;
+    double age_ms = static_cast<double>(current_time - most_recent);
+    if (age_ms < 0) age_ms = 0;
+
+    return 100.0 * std::exp(-age_ms / TAU_MS);
 }
 
 double RiskEngine::computeFamiliarity(const std::vector<AnomalyEvent>& anomalies) {
