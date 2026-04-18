@@ -1,0 +1,23 @@
+[Unit]
+Description=System Monitor & Behavior Analyzer
+Documentation=https://github.com/Alexandru2984/System-monitor-and-behavior-analyzer
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sysmonitor /etc/sysmonitor/config.json
+WorkingDirectory=/var/lib/sysmonitor
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sysmonitor
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

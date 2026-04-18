@@ -63,7 +63,8 @@ std::string Explainer::explainAnomaly(const AnomalyEvent& a,
 
     std::string icon = a.metric_type == "cpu" ? "[CPU]" :
                        a.metric_type == "memory" ? "[MEM]" :
-                       a.metric_type == "network" ? "[NET]" : "[SYS]";
+                       a.metric_type == "network" ? "[NET]" :
+                       a.metric_type == "disk" ? "[DISK]" : "[SYS]";
 
     out << icon << " " << severityLabel(a.severity) << " - " << a.description << "\n";
 
@@ -72,6 +73,7 @@ std::string Explainer::explainAnomaly(const AnomalyEvent& a,
     if (a.metric_type == "cpu") baseline_key = "cpu_total";
     else if (a.metric_type == "memory") baseline_key = "mem_usage";
     else if (a.metric_type == "network") baseline_key = "net_rx";
+    else if (a.metric_type == "disk") baseline_key = "disk_write";
 
     if (const auto* bl = bm.find(baseline_key)) {
         auto lw = bl->longWindow();
@@ -154,6 +156,7 @@ std::string Explainer::patternTypeName(PatternType type) {
         case PatternType::MemoryLeak:         return "LEAK";
         case PatternType::NewProcess:         return "NEW PROC";
         case PatternType::DisappearedProcess: return "GONE PROC";
+        case PatternType::DiskIOSustainedHigh: return "DISK I/O";
         default:                              return "UNKNOWN";
     }
 }

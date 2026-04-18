@@ -38,6 +38,8 @@ Config Config::loadFromFile(const std::string& path) {
             cfg.process_interval = std::chrono::milliseconds(j["process_interval_ms"].get<int>());
         if (j.contains("network_interval_ms"))
             cfg.network_interval = std::chrono::milliseconds(j["network_interval_ms"].get<int>());
+        if (j.contains("disk_interval_ms"))
+            cfg.disk_interval = std::chrono::milliseconds(j["disk_interval_ms"].get<int>());
 
         read("db_path", cfg.db_path);
         read("retention_hours", cfg.retention_hours);

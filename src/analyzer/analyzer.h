@@ -13,6 +13,7 @@
 //   thread is not actively running (e.g., after Scheduler::stop()).
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include "analyzer/alerter.h"
 #include "analyzer/baseline_manager.h"
 #include "analyzer/event_timeline.h"
 #include "analyzer/explainer.h"
@@ -35,7 +36,7 @@ public:
     explicit Analyzer(sqlite3* db, double sigma_threshold = 2.0, double ema_alpha = 0.05);
 
     /// Analyze a metric snapshot: detect anomalies, patterns, compute risk,
-    /// generate explanation, record in timeline.
+    /// generate explanation, record in timeline, and fire alerts.
     /// Returns a full AnalysisReport.
     /// NOTE: Must only be called from a single thread.
     AnalysisReport analyze(const MetricSnapshot& snapshot);
@@ -48,12 +49,16 @@ public:
     /// Only safe when called from the analysis thread or after stop().
     EventTimeline& mutableTimeline() { return timeline_; }
 
+    /// Access alerter for runtime configuration
+    Alerter& alerter() { return alerter_; }
+
 private:
     BaselineManager baselines_;
     PatternDetector pattern_detector_;
     Explainer explainer_;
     RiskEngine risk_engine_;
     EventTimeline timeline_;
+    Alerter alerter_;
 
     double sigma_threshold_;
 
@@ -62,6 +67,7 @@ private:
     std::vector<AnomalyEvent> checkCpu(const CpuSnapshot& s);
     std::vector<AnomalyEvent> checkMemory(const MemorySnapshot& s);
     std::vector<AnomalyEvent> checkNetwork(const NetworkSnapshot& s);
+    std::vector<AnomalyEvent> checkDisk(const DiskSnapshot& s);
 
     // Update baselines after detection
     void updateBaselines(const MetricSnapshot& snapshot);

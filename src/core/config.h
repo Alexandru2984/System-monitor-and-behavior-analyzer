@@ -14,6 +14,7 @@ struct Config {
     std::chrono::milliseconds memory_interval{1000};
     std::chrono::milliseconds process_interval{5000};
     std::chrono::milliseconds network_interval{2000};
+    std::chrono::milliseconds disk_interval{2000};
 
     // Storage
     std::string db_path = "sysmonitor.db";

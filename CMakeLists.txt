@@ -32,6 +32,7 @@ add_library(sysmonitor_lib STATIC
     src/collectors/memory_collector.cpp
     src/collectors/process_collector.cpp
     src/collectors/network_collector.cpp
+    src/collectors/disk_collector.cpp
     src/storage/sqlite_storage.cpp
     src/analyzer/baseline_manager.cpp
     src/analyzer/pattern_detector.cpp
@@ -39,6 +40,7 @@ add_library(sysmonitor_lib STATIC
     src/analyzer/risk_engine.cpp
     src/analyzer/event_timeline.cpp
     src/analyzer/analyzer.cpp
+    src/analyzer/alerter.cpp
     src/core/scheduler.cpp
     src/core/config.cpp
 )

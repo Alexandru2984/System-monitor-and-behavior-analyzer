@@ -29,6 +29,8 @@ private:
     std::vector<PatternEvent> detectNetworkPatterns(const NetworkSnapshot& s,
                                                      BaselineManager& bm);
     std::vector<PatternEvent> detectProcessPatterns(const ProcessSnapshot& s);
+    std::vector<PatternEvent> detectDiskPatterns(const DiskSnapshot& s,
+                                                  BaselineManager& bm);
 };
 
 } // namespace sysmon

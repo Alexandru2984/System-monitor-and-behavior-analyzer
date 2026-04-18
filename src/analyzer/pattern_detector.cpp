@@ -21,6 +21,8 @@ std::vector<PatternEvent> PatternDetector::detect(
             return detectNetworkPatterns(s, baselines);
         else if constexpr (std::is_same_v<T, ProcessSnapshot>)
             return detectProcessPatterns(s);
+        else if constexpr (std::is_same_v<T, DiskSnapshot>)
+            return detectDiskPatterns(s, baselines);
         else
             return {};
     }, snapshot);
@@ -180,6 +182,50 @@ std::vector<PatternEvent> PatternDetector::detectProcessPatterns(
 
     prev_pids_ = current_pids;
     has_prev_pids_ = true;
+    return events;
+}
+
+std::vector<PatternEvent> PatternDetector::detectDiskPatterns(
+    const DiskSnapshot& s, BaselineManager& bm)
+{
+    std::vector<PatternEvent> events;
+
+    double total_read = 0.0, total_write = 0.0;
+    for (const auto& dev : s.devices) {
+        total_read += dev.read_rate_kbps;
+        total_write += dev.write_rate_kbps;
+    }
+
+    auto& bl_read = bm.get("disk_read");
+
+    if (bl_read.isSustainedHigh(5)) {
+        events.push_back(PatternEvent{
+            {s.timestamp, "disk", std::format(
+                "Disk read sustained above P95 ({:.1f} KB/s)", total_read)},
+            PatternType::DiskIOSustainedHigh, 0.8
+        });
+    }
+
+    auto& bl_write = bm.get("disk_write");
+
+    if (bl_write.isSustainedHigh(5)) {
+        events.push_back(PatternEvent{
+            {s.timestamp, "disk", std::format(
+                "Disk write sustained above P95 ({:.1f} KB/s)", total_write)},
+            PatternType::DiskIOSustainedHigh, 0.8
+        });
+    }
+
+    // Upward trend in disk I/O
+    double slope = bl_write.trend();
+    if (slope > 0.01 && bl_write.shortWindow().count > 20) {
+        events.push_back(PatternEvent{
+            {s.timestamp, "disk", std::format(
+                "Disk write trending upward (slope: {:.4f}/sample)", slope)},
+            PatternType::Trend, std::min(1.0, slope / 0.04)
+        });
+    }
+
     return events;
 }
 

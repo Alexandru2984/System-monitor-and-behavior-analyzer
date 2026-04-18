@@ -18,6 +18,7 @@
 #include "collectors/memory_collector.h"
 #include "collectors/process_collector.h"
 #include "collectors/network_collector.h"
+#include "collectors/disk_collector.h"
 #include "storage/sqlite_storage.h"
 #include "utils/logger.h"
 
@@ -80,6 +81,7 @@ int main(int argc, char* argv[]) {
     auto memory_collector  = std::make_shared<sysmon::MemoryCollector>();
     auto process_collector = std::make_shared<sysmon::ProcessCollector>();
     auto network_collector = std::make_shared<sysmon::NetworkCollector>();
+    auto disk_collector    = std::make_shared<sysmon::DiskCollector>();
 
     // ── 4. Create scheduler and register collectors ────────────────────────
     sysmon::Scheduler scheduler(storage, cfg);
@@ -87,6 +89,7 @@ int main(int argc, char* argv[]) {
     scheduler.addCollector(memory_collector,  cfg.memory_interval);
     scheduler.addCollector(process_collector, cfg.process_interval);
     scheduler.addCollector(network_collector, cfg.network_interval);
+    scheduler.addCollector(disk_collector,    cfg.disk_interval);
 
     // ── 5. Install signal handlers ─────────────────────────────────────────
     struct sigaction sa{};

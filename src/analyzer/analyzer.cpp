@@ -59,6 +59,9 @@ AnalysisReport Analyzer::analyze(const MetricSnapshot& snapshot) {
     // 6. Record in timeline
     timeline_.record(report);
 
+    // 7. Fire desktop alerts if risk is high
+    alerter_.check(report);
+
     return report;
 }
 
@@ -73,6 +76,8 @@ std::vector<AnomalyEvent> Analyzer::detectAnomalies(const MetricSnapshot& snapsh
             return checkMemory(s);
         else if constexpr (std::is_same_v<T, NetworkSnapshot>)
             return checkNetwork(s);
+        else if constexpr (std::is_same_v<T, DiskSnapshot>)
+            return checkDisk(s);
         else
             return {};
     }, snapshot);
@@ -180,6 +185,69 @@ std::vector<AnomalyEvent> Analyzer::checkNetwork(const NetworkSnapshot& s) {
     return events;
 }
 
+std::vector<AnomalyEvent> Analyzer::checkDisk(const DiskSnapshot& s) {
+    std::vector<AnomalyEvent> events;
+
+    // Aggregate total I/O across all disk devices
+    double total_read = 0.0, total_write = 0.0, max_util = 0.0;
+    for (const auto& dev : s.devices) {
+        total_read += dev.read_rate_kbps;
+        total_write += dev.write_rate_kbps;
+        max_util = std::max(max_util, dev.io_util_percent);
+    }
+
+    // Check read rate anomaly
+    auto& bl_read = baselines_.get("disk_read");
+    auto lw_read = bl_read.longWindow();
+
+    if (lw_read.ready && lw_read.count > 10) {
+        double threshold = bl_read.anomalyThreshold(sigma_threshold_, 50.0);
+        if (total_read > threshold) {
+            double effective_sigma = std::max(lw_read.sigma, 50.0);
+            double severity = std::min(1.0,
+                (total_read - lw_read.mean) / (effective_sigma * sigma_threshold_));
+
+            events.push_back(AnomalyEvent{
+                {s.timestamp, "disk", std::format(
+                    "Disk read spike: {:.1f} KB/s (baseline: {:.1f} ± {:.1f})",
+                    total_read, lw_read.mean, lw_read.sigma)},
+                severity, 0.0
+            });
+        }
+    }
+
+    // Check write rate anomaly
+    auto& bl_write = baselines_.get("disk_write");
+    auto lw_write = bl_write.longWindow();
+
+    if (lw_write.ready && lw_write.count > 10) {
+        double threshold = bl_write.anomalyThreshold(sigma_threshold_, 50.0);
+        if (total_write > threshold) {
+            double effective_sigma = std::max(lw_write.sigma, 50.0);
+            double severity = std::min(1.0,
+                (total_write - lw_write.mean) / (effective_sigma * sigma_threshold_));
+
+            events.push_back(AnomalyEvent{
+                {s.timestamp, "disk", std::format(
+                    "Disk write spike: {:.1f} KB/s (baseline: {:.1f} ± {:.1f})",
+                    total_write, lw_write.mean, lw_write.sigma)},
+                severity, 0.0
+            });
+        }
+    }
+
+    // Check I/O utilization (sustained high = disk bottleneck)
+    if (max_util > 90.0) {
+        events.push_back(AnomalyEvent{
+            {s.timestamp, "disk", std::format(
+                "Disk I/O saturation: {:.0f}% utilization", max_util)},
+            std::min(1.0, max_util / 100.0), 0.0
+        });
+    }
+
+    return events;
+}
+
 // ── Baseline updates ────────────────────────────────────────────────────────
 
 void Analyzer::updateBaselines(const MetricSnapshot& snapshot) {
@@ -201,6 +269,14 @@ void Analyzer::updateBaselines(const MetricSnapshot& snapshot) {
             }
             baselines_.update("net_rx", total_rx);
             baselines_.update("net_tx", total_tx);
+        } else if constexpr (std::is_same_v<T, DiskSnapshot>) {
+            double total_read = 0, total_write = 0;
+            for (const auto& dev : s.devices) {
+                total_read += dev.read_rate_kbps;
+                total_write += dev.write_rate_kbps;
+            }
+            baselines_.update("disk_read", total_read);
+            baselines_.update("disk_write", total_write);
         }
     }, snapshot);
 }

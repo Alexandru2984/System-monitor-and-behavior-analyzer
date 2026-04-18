@@ -1,0 +1,28 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libsqlite3-dev libglfw3-dev
+
+    - name: Configure
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_DASHBOARD=OFF
+
+    - name: Build
+      run: cmake --build build -j$(nproc)
+
+    - name: Test
+      run: cd build && ctest --output-on-failure
