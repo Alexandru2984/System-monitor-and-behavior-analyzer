@@ -30,10 +30,16 @@ static uint64_t totalMemoryKb() {
     return val;
 }
 
-// Helper: resolve UID to username (cached)
+// Helper: resolve UID to username (thread-safe version)
 static std::string uidToUser(uid_t uid) {
-    struct passwd* pw = getpwuid(uid);
-    return pw ? pw->pw_name : std::to_string(uid);
+    struct passwd pw_buf;
+    struct passwd* result = nullptr;
+    char buf[1024];
+    int rc = getpwuid_r(uid, &pw_buf, buf, sizeof(buf), &result);
+    if (rc == 0 && result) {
+        return result->pw_name;
+    }
+    return std::to_string(uid);
 }
 
 MetricSnapshot ProcessCollector::collect() {
@@ -159,7 +165,10 @@ MetricSnapshot ProcessCollector::collect() {
     }
 
     closedir(proc_dir);
-    
+
+    // P8 fix: Replace prev_times_ entirely with new_times.
+    // This naturally cleans up stale PID entries (dead processes)
+    // since only PIDs seen in this snapshot are in new_times.
     prev_times_ = std::move(new_times);
 
     LOG_DEBUG("Processes: {} total", snap.processes.size());

@@ -2,6 +2,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // analyzer/analyzer.h — Facade: wires baseline, detection, explanation, risk
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// THREAD SAFETY:
+//   The Analyzer is designed to be called from a SINGLE thread only
+//   (the dedicated analysis thread in Scheduler).  It has NO internal mutex.
+//   Do NOT call analyze() from multiple threads concurrently.
+//
+//   The const accessors (baselines(), timeline()) are safe to call from
+//   other threads only for READ operations, and only when the analysis
+//   thread is not actively running (e.g., after Scheduler::stop()).
+// ─────────────────────────────────────────────────────────────────────────────
 
 #include "analyzer/baseline_manager.h"
 #include "analyzer/event_timeline.h"
@@ -11,25 +21,32 @@
 #include "core/types.h"
 
 #include <memory>
-#include <mutex>
 #include <string>
+
+struct sqlite3;  // forward declaration
 
 namespace sysmon {
 
 class Analyzer {
 public:
-    /// @param db_path    Path to SQLite DB (Timeline opens its own connection)
-    /// @param sigma      Sigma threshold for anomaly detection
-    explicit Analyzer(const std::string& db_path, double sigma_threshold = 2.0, double ema_alpha = 0.05);
+    /// @param db       Shared SQLite handle (owned by SqliteStorage)
+    /// @param sigma    Sigma threshold for anomaly detection
+    /// @param ema_alpha EMA smoothing factor
+    explicit Analyzer(sqlite3* db, double sigma_threshold = 2.0, double ema_alpha = 0.05);
 
     /// Analyze a metric snapshot: detect anomalies, patterns, compute risk,
     /// generate explanation, record in timeline.
     /// Returns a full AnalysisReport.
+    /// NOTE: Must only be called from a single thread.
     AnalysisReport analyze(const MetricSnapshot& snapshot);
 
-    /// Access sub-components for dashboard queries
-    BaselineManager& baselines() { return baselines_; }
-    EventTimeline& timeline() { return timeline_; }
+    /// Access sub-components (const — safe for read-only dashboard queries)
+    const BaselineManager& baselines() const { return baselines_; }
+    const EventTimeline& timeline() const { return timeline_; }
+
+    /// Non-const access for timeline queries that need to write (e.g., getRecentEvents).
+    /// Only safe when called from the analysis thread or after stop().
+    EventTimeline& mutableTimeline() { return timeline_; }
 
 private:
     BaselineManager baselines_;
@@ -38,7 +55,6 @@ private:
     RiskEngine risk_engine_;
     EventTimeline timeline_;
 
-    std::mutex analyze_mutex_;
     double sigma_threshold_;
 
     // Anomaly detection using baselines (replaces old AnomalyDetector)

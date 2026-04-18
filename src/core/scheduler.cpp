@@ -13,7 +13,7 @@ namespace sysmon {
 Scheduler::Scheduler(std::shared_ptr<SqliteStorage> storage, const Config& config)
     : storage_(std::move(storage))
     , config_(config)
-    , analyzer_(config.db_path, config.anomaly_sigma, config.ema_alpha)
+    , analyzer_(storage_->db(), config.anomaly_sigma, config.ema_alpha)
 {}
 
 void Scheduler::addCollector(std::shared_ptr<ICollector> collector,
@@ -24,6 +24,11 @@ void Scheduler::addCollector(std::shared_ptr<ICollector> collector,
 void Scheduler::start() {
     if (running_) return;
     running_ = true;
+
+    // Start the dedicated analysis thread FIRST so it's ready to consume
+    analysis_thread_ = std::jthread([this](std::stop_token st) {
+        analysisLoop(std::move(st));
+    });
 
     for (auto& task : tasks_) {
         LOG_INFO("Starting {} (interval: {}ms)",
@@ -72,13 +77,18 @@ void Scheduler::stop() {
         t.request_stop();
     }
 
+    // Stop the analysis thread and wake it up
+    analysis_thread_.request_stop();
+    analysis_queue_.notify_all();
+
     // jthreads auto-join on destruction, but we join explicitly for clarity
     for (auto& t : threads_) {
         if (t.joinable()) t.join();
     }
+    if (analysis_thread_.joinable()) analysis_thread_.join();
 
     threads_.clear();
-    LOG_INFO("Scheduler stopped — all collection threads joined");
+    LOG_INFO("Scheduler stopped — all collection and analysis threads joined");
 }
 
 void Scheduler::collectionLoop(std::stop_token stop_token, ScheduledTask task) {
@@ -96,13 +106,8 @@ void Scheduler::collectionLoop(std::stop_token stop_token, ScheduledTask task) {
             // ── Store ──────────────────────────────────────────────────────
             storage_->store(snapshot);
 
-            // ── Analyze (replaces old detector_ + scorer_) ─────────────────
-            auto report = analyzer_.analyze(snapshot);
-            if (!report.anomalies.empty()) {
-                for (const auto& a : report.anomalies) {
-                    storage_->storeAnomaly(a);
-                }
-            }
+            // ── Enqueue for analysis (non-blocking) ────────────────────────
+            analysis_queue_.push(snapshot);
 
         } catch (const std::exception& e) {
             LOG_ERROR("{}: error during collection: {}",
@@ -119,6 +124,28 @@ void Scheduler::collectionLoop(std::stop_token stop_token, ScheduledTask task) {
     }
 
     LOG_INFO("{}: collection thread stopped", task.collector->name());
+}
+
+void Scheduler::analysisLoop(std::stop_token stop_token) {
+    LOG_INFO("Analysis thread started");
+
+    while (!stop_token.stop_requested()) {
+        auto maybe_snapshot = analysis_queue_.wait_and_pop(stop_token);
+        if (!maybe_snapshot) break;  // shutdown requested
+
+        try {
+            auto report = analyzer_.analyze(*maybe_snapshot);
+            if (!report.anomalies.empty()) {
+                for (const auto& a : report.anomalies) {
+                    storage_->storeAnomaly(a);
+                }
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("Analysis error: {}", e.what());
+        }
+    }
+
+    LOG_INFO("Analysis thread stopped");
 }
 
 } // namespace sysmon

@@ -30,7 +30,6 @@
 #include <cmath>
 #include <fstream>
 #include <unistd.h>
-#include <cmath>
 
 // ── Color palette (dark theme accent colors) ────────────────────────────────
 static const ImVec4 kAccentCyan   = ImVec4(0.0f, 0.83f, 0.95f, 1.0f);
@@ -223,7 +222,7 @@ static void exportReportsToTXT(std::vector<AnalysisEventEntry> events) {
             os << "       SYSTEM MONITOR ANALYSIS REPORTS    \n";
             os << "==========================================\n\n";
             for (const auto& ev : events) {
-                std::time_t t = ev.timestamp;
+                std::time_t t = static_cast<std::time_t>(ev.timestamp / 1000);  // ms → s
                 struct tm tm_buf;
                 localtime_r(&t, &tm_buf);
                 char time_str[32];

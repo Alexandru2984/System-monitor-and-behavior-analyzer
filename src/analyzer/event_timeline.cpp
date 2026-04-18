@@ -10,8 +10,8 @@
 
 namespace sysmon {
 
-EventTimeline::EventTimeline(const std::string& db_path)
-    : db_path_(db_path) {}
+EventTimeline::EventTimeline(sqlite3* db)
+    : db_(db) {}
 
 EventTimeline::~EventTimeline() {
     // Close any active incident before shutting down so it doesn't remain
@@ -21,7 +21,11 @@ EventTimeline::~EventTimeline() {
             std::chrono::system_clock::now().time_since_epoch()).count();
         closeActiveIncident(now);
     }
-    if (db_) sqlite3_close(db_);
+    // Finalize prepared statements
+    if (stmt_insert_event_)    sqlite3_finalize(stmt_insert_event_);
+    if (stmt_insert_incident_) sqlite3_finalize(stmt_insert_incident_);
+    if (stmt_update_incident_) sqlite3_finalize(stmt_update_incident_);
+    // Do NOT close db_ — it's owned by SqliteStorage
 }
 
 void EventTimeline::exec(const char* sql) {
@@ -34,15 +38,6 @@ void EventTimeline::exec(const char* sql) {
 }
 
 void EventTimeline::initialize() {
-    int rc = sqlite3_open(db_path_.c_str(), &db_);
-    if (rc != SQLITE_OK) {
-        throw std::runtime_error("EventTimeline cannot open SQLite DB: " + db_path_);
-    }
-    sqlite3_busy_timeout(db_, 5000); // 5 sec timeout for WAL busy writers
-
-    exec("PRAGMA journal_mode=WAL;");
-    exec("PRAGMA synchronous=NORMAL;");
-
     exec(R"SQL(
         CREATE TABLE IF NOT EXISTS analysis_events (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +68,33 @@ void EventTimeline::initialize() {
     // Close any stale incidents left active from a previous unclean shutdown
     exec("UPDATE incidents SET is_active = 0, summary = 'Closed on restart (unclean shutdown)' "
          "WHERE is_active = 1;");
+
+    prepareStatements();
+}
+
+void EventTimeline::prepareStatements() {
+    auto prepare = [&](const char* sql, sqlite3_stmt** stmt) {
+        if (sqlite3_prepare_v2(db_, sql, -1, stmt, nullptr) != SQLITE_OK) {
+            throw std::runtime_error(
+                std::string("EventTimeline: failed to prepare statement: ") + sqlite3_errmsg(db_));
+        }
+    };
+
+    prepare("INSERT INTO analysis_events "
+            "(timestamp, anomaly_count, pattern_count, risk_total, "
+            "explanation, incident_id) VALUES (?,?,?,?,?,?);",
+            &stmt_insert_event_);
+
+    prepare("INSERT INTO incidents "
+            "(start_time, peak_risk, event_count, is_active) "
+            "VALUES (?,?,1,1);",
+            &stmt_insert_incident_);
+
+    prepare("UPDATE incidents SET "
+            "peak_risk = MAX(peak_risk, ?), "
+            "event_count = event_count + 1 "
+            "WHERE id = ?;",
+            &stmt_update_incident_);
 }
 
 void EventTimeline::record(const AnalysisReport& report) {
@@ -97,21 +119,20 @@ void EventTimeline::record(const AnalysisReport& report) {
     }
     if (!has_events) last_heartbeat_ts_ = report.timestamp;
 
-    // Insert event
-    const char* sql = "INSERT INTO analysis_events "
-                      "(timestamp, anomaly_count, pattern_count, risk_total, "
-                      "explanation, incident_id) VALUES (?,?,?,?,?,?);";
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
-    sqlite3_bind_int64(stmt, 1, report.timestamp);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(report.anomalies.size()));
-    sqlite3_bind_int(stmt, 3, static_cast<int>(report.patterns.size()));
-    sqlite3_bind_double(stmt, 4, report.risk.total);
-    sqlite3_bind_text(stmt, 5, report.explanation.c_str(),
+    // Insert event using prepared statement
+    sqlite3_bind_int64(stmt_insert_event_, 1, report.timestamp);
+    sqlite3_bind_int(stmt_insert_event_, 2, static_cast<int>(report.anomalies.size()));
+    sqlite3_bind_int(stmt_insert_event_, 3, static_cast<int>(report.patterns.size()));
+    sqlite3_bind_double(stmt_insert_event_, 4, report.risk.total);
+    sqlite3_bind_text(stmt_insert_event_, 5, report.explanation.c_str(),
                       static_cast<int>(report.explanation.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 6, active_incident_id_ >= 0 ? active_incident_id_ : 0);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    sqlite3_bind_int64(stmt_insert_event_, 6, active_incident_id_ >= 0 ? active_incident_id_ : 0);
+
+    int rc = sqlite3_step(stmt_insert_event_);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("EventTimeline: insert event failed: {}", sqlite3_errmsg(db_));
+    }
+    sqlite3_reset(stmt_insert_event_);
 }
 
 void EventTimeline::openOrExtendIncident(const AnalysisReport& report) {
@@ -119,30 +140,25 @@ void EventTimeline::openOrExtendIncident(const AnalysisReport& report) {
 
     if (active_incident_id_ < 0) {
         // Create new incident
-        const char* sql = "INSERT INTO incidents "
-                          "(start_time, peak_risk, event_count, is_active) "
-                          "VALUES (?,?,1,1);";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
-        sqlite3_bind_int64(stmt, 1, report.timestamp);
-        sqlite3_bind_double(stmt, 2, report.risk.total);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
+        sqlite3_bind_int64(stmt_insert_incident_, 1, report.timestamp);
+        sqlite3_bind_double(stmt_insert_incident_, 2, report.risk.total);
+        int rc = sqlite3_step(stmt_insert_incident_);
+        if (rc != SQLITE_DONE) {
+            LOG_ERROR("EventTimeline: insert incident failed: {}", sqlite3_errmsg(db_));
+        }
+        sqlite3_reset(stmt_insert_incident_);
 
         active_incident_id_ = sqlite3_last_insert_rowid(db_);
         LOG_INFO("Opened new incident #{}", active_incident_id_);
     } else {
         // Extend existing incident
-        const char* sql = "UPDATE incidents SET "
-                          "peak_risk = MAX(peak_risk, ?), "
-                          "event_count = event_count + 1 "
-                          "WHERE id = ?;";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
-        sqlite3_bind_double(stmt, 1, report.risk.total);
-        sqlite3_bind_int64(stmt, 2, active_incident_id_);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
+        sqlite3_bind_double(stmt_update_incident_, 1, report.risk.total);
+        sqlite3_bind_int64(stmt_update_incident_, 2, active_incident_id_);
+        int rc = sqlite3_step(stmt_update_incident_);
+        if (rc != SQLITE_DONE) {
+            LOG_ERROR("EventTimeline: update incident failed: {}", sqlite3_errmsg(db_));
+        }
+        sqlite3_reset(stmt_update_incident_);
     }
 }
 

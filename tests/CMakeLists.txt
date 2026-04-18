@@ -12,7 +12,6 @@ endfunction()
 
 add_sysmonitor_test(test_cpu_collector    test_cpu_collector.cpp)
 add_sysmonitor_test(test_memory_collector test_memory_collector.cpp)
-add_sysmonitor_test(test_baseline_calculator test_baseline_calculator.cpp)
 add_sysmonitor_test(test_sqlite_storage   test_sqlite_storage.cpp)
 add_sysmonitor_test(test_baseline_manager test_baseline_manager.cpp)
 add_sysmonitor_test(test_pattern_detector test_pattern_detector.cpp)

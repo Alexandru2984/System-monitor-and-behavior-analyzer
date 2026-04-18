@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "analyzer/analyzer.h"
+#include "storage/sqlite_storage.h"
 #include "utils/logger.h"
 #include <filesystem>
 
@@ -7,11 +8,17 @@ using namespace sysmon;
 
 class AnalyzerTest : public ::testing::Test {
 protected:
+    std::string db_path = "test_analyzer.db";
+    std::shared_ptr<SqliteStorage> storage;
+
     void SetUp() override {
         sysmon::Logger::init("tests_analyzer.log", spdlog::level::debug);
         cleanup();
+        storage = std::make_shared<SqliteStorage>(db_path);
+        storage->initialize();
     }
     void TearDown() override {
+        storage.reset();  // close DB before deleting files
         cleanup();
     }
 
@@ -23,7 +30,7 @@ protected:
 };
 
 TEST_F(AnalyzerTest, IntegrationSpikeDetection) {
-    Analyzer analyzer("test_analyzer.db", 3.0, 0.15);
+    Analyzer analyzer(storage->db(), 3.0, 0.15);
     
     // Send 30 snapshots of CPU data at 5% usage to establish a baseline
     for (int i = 0; i < 30; ++i) {
@@ -61,7 +68,7 @@ TEST_F(AnalyzerTest, IntegrationSpikeDetection) {
 }
 
 TEST_F(AnalyzerTest, IntegrationNetworkThreshold) {
-    Analyzer analyzer("test_analyzer.db", 3.0, 0.15);
+    Analyzer analyzer(storage->db(), 3.0, 0.15);
     
     // Train network baseline (RX=1000 kbps)
     for (int i = 0; i < 30; ++i) {
@@ -88,7 +95,7 @@ TEST_F(AnalyzerTest, IntegrationNetworkThreshold) {
 // ── Memory anomaly detection ───────────────────────────────────────────────
 
 TEST_F(AnalyzerTest, IntegrationMemorySpikeDetection) {
-    Analyzer analyzer("test_analyzer.db", 2.0, 0.15);
+    Analyzer analyzer(storage->db(), 2.0, 0.15);
 
     // Establish memory baseline at 40%
     for (int i = 0; i < 30; ++i) {
@@ -127,7 +134,7 @@ TEST_F(AnalyzerTest, IntegrationMemorySpikeDetection) {
 // ── No false positives on stable input ─────────────────────────────────────
 
 TEST_F(AnalyzerTest, NoAnomaliesOnStableInput) {
-    Analyzer analyzer("test_analyzer.db", 2.0, 0.1);
+    Analyzer analyzer(storage->db(), 2.0, 0.1);
 
     // 50 stable CPU samples — should never trigger
     for (int i = 0; i < 50; ++i) {
@@ -144,7 +151,7 @@ TEST_F(AnalyzerTest, NoAnomaliesOnStableInput) {
 // ── Risk score is proportional to severity ─────────────────────────────────
 
 TEST_F(AnalyzerTest, RiskScoreProportionalToSeverity) {
-    Analyzer analyzer("test_analyzer.db", 2.0, 0.15);
+    Analyzer analyzer(storage->db(), 2.0, 0.15);
 
     // Build baseline
     for (int i = 0; i < 30; ++i) {
@@ -175,7 +182,7 @@ TEST_F(AnalyzerTest, RiskScoreProportionalToSeverity) {
 // ── Explanation contains timestamp from events, not wall clock ─────────────
 
 TEST_F(AnalyzerTest, ExplanationContainsEventTimestamp) {
-    Analyzer analyzer("test_analyzer.db", 2.0, 0.15);
+    Analyzer analyzer(storage->db(), 2.0, 0.15);
 
     for (int i = 0; i < 30; ++i) {
         CpuSnapshot cpu;
@@ -200,7 +207,7 @@ TEST_F(AnalyzerTest, ExplanationContainsEventTimestamp) {
 
 TEST_F(AnalyzerTest, HighAlphaDoesNotCrash) {
     // ema_alpha=0.5 → short_alpha = min(1.5, 1.0) = 1.0
-    Analyzer analyzer("test_analyzer.db", 2.0, 0.5);
+    Analyzer analyzer(storage->db(), 2.0, 0.5);
 
     for (int i = 0; i < 30; ++i) {
         CpuSnapshot cpu;
@@ -214,7 +221,7 @@ TEST_F(AnalyzerTest, HighAlphaDoesNotCrash) {
 // ── Network TX spike detection ─────────────────────────────────────────────
 
 TEST_F(AnalyzerTest, IntegrationNetworkTxSpike) {
-    Analyzer analyzer("test_analyzer.db", 2.0, 0.15);
+    Analyzer analyzer(storage->db(), 2.0, 0.15);
 
     for (int i = 0; i < 30; ++i) {
         NetworkSnapshot net;

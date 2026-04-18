@@ -42,6 +42,14 @@ void Logger::init(const std::string& log_file, spdlog::level::level_enum level) 
 }
 
 std::shared_ptr<spdlog::logger>& Logger::get() {
+    if (!s_logger) {
+        // Fallback: create a minimal console logger if init() was never called.
+        // This prevents null pointer dereference in LOG_* macros.
+        auto fallback = spdlog::stdout_color_mt("sysmon_fallback");
+        fallback->set_level(spdlog::level::debug);
+        fallback->warn("Logger::get() called before init() — using fallback console logger");
+        s_logger = fallback;
+    }
     return s_logger;
 }
 

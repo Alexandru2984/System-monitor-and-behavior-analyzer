@@ -128,7 +128,7 @@ std::string Explainer::contextFromSnapshot(const MetricSnapshot& snapshot) {
 
             std::ostringstream out;
             out << "  Top CPU consumers:\n";
-            for (size_t i = 0; i < std::min(sorted.size(), (size_t)3); ++i) {
+            for (size_t i = 0; i < std::min(sorted.size(), static_cast<size_t>(3)); ++i) {
                 out << std::format("    {}. '{}' (PID {}) — CPU: {:.1f}%, MEM: {:.1f}%\n",
                     i + 1, sorted[i].name, sorted[i].pid,
                     sorted[i].cpu_percent, sorted[i].mem_percent);
@@ -154,8 +154,8 @@ std::string Explainer::patternTypeName(PatternType type) {
         case PatternType::MemoryLeak:         return "LEAK";
         case PatternType::NewProcess:         return "NEW PROC";
         case PatternType::DisappearedProcess: return "GONE PROC";
+        default:                              return "UNKNOWN";
     }
-    return "UNKNOWN";
 }
 
 } // namespace sysmon

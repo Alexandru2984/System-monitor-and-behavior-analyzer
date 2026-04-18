@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "analyzer/event_timeline.h"
+#include "storage/sqlite_storage.h"
 #include "utils/logger.h"
 
 #include <gtest/gtest.h>
@@ -13,6 +14,7 @@ using namespace sysmon;
 class EventTimelineTest : public ::testing::Test {
 protected:
     std::string db_path = "/tmp/sysmon_timeline_test.db";
+    std::shared_ptr<SqliteStorage> storage;
 
     void SetUp() override {
         cleanup();
@@ -21,9 +23,12 @@ protected:
             Logger::init("/tmp/sysmon_timeline_test.log", spdlog::level::warn);
             logger_init = true;
         }
+        storage = std::make_shared<SqliteStorage>(db_path);
+        storage->initialize();
     }
 
     void TearDown() override {
+        storage.reset();
         cleanup();
     }
 
@@ -51,12 +56,12 @@ protected:
 };
 
 TEST_F(EventTimelineTest, InitializesWithoutError) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     EXPECT_NO_THROW(timeline.initialize());
 }
 
 TEST_F(EventTimelineTest, RecordEmptyReport) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
     // Empty reports are throttled but the first one should go through
@@ -65,7 +70,7 @@ TEST_F(EventTimelineTest, RecordEmptyReport) {
 }
 
 TEST_F(EventTimelineTest, OpenIncidentOnAnomaly) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
     auto report = makeReport(1000, 1, 25.0, "CPU spike detected");
@@ -78,7 +83,7 @@ TEST_F(EventTimelineTest, OpenIncidentOnAnomaly) {
 }
 
 TEST_F(EventTimelineTest, ExtendIncidentWithMoreAnomalies) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
     // Open incident
@@ -94,7 +99,7 @@ TEST_F(EventTimelineTest, ExtendIncidentWithMoreAnomalies) {
 }
 
 TEST_F(EventTimelineTest, CloseIncidentAfterGap) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
     // Open incident
@@ -116,7 +121,7 @@ TEST_F(EventTimelineTest, CloseIncidentAfterGap) {
 }
 
 TEST_F(EventTimelineTest, GetRecentEventsReturnsRecords) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
     // Record several events with anomalies
@@ -134,29 +139,27 @@ TEST_F(EventTimelineTest, GetRecentEventsReturnsRecords) {
 
 TEST_F(EventTimelineTest, StaleIncidentClosedOnRestart) {
     {
-        // First session: open an incident but "crash" (no destructor close)
-        EventTimeline timeline(db_path);
+        // First session: open an incident
+        EventTimeline timeline(storage->db());
         timeline.initialize();
         timeline.record(makeReport(1000, 1, 30.0, "spike"));
 
         auto active = timeline.getActiveIncident();
         EXPECT_TRUE(active.is_active);
-        // Destructor will try to close it, but let's simulate the stale case
+        // Destructor will try to close it
     }
 
-    // Manually re-open the incident as stale (the destructor may have closed it,
-    // so we verify the initialize() cleanup handles it regardless)
+    // Second session: stale incidents should be closed on initialize()
     {
-        EventTimeline timeline2(db_path);
+        EventTimeline timeline2(storage->db());
         timeline2.initialize();
-        // After initialize(), stale incidents should be closed
         auto active = timeline2.getActiveIncident();
         EXPECT_FALSE(active.is_active);
     }
 }
 
 TEST_F(EventTimelineTest, MultipleIncidentLifecycles) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
     // First incident
@@ -172,10 +175,10 @@ TEST_F(EventTimelineTest, MultipleIncidentLifecycles) {
 }
 
 TEST_F(EventTimelineTest, ThrottlesEmptyEvents) {
-    EventTimeline timeline(db_path);
+    EventTimeline timeline(storage->db());
     timeline.initialize();
 
-    // Record many empty reports rapidly (< 5s apart)
+    // Record many empty reports rapidly (<5s apart)
     for (int i = 0; i < 10; ++i) {
         timeline.record(makeReport(1000 + i * 100));
     }

@@ -23,7 +23,7 @@
 
 #include <csignal>
 #include <memory>
-#include <unistd.h>
+#include <unistd.h>  // write()
 #include <atomic>
 #include <condition_variable>
 #include <mutex>

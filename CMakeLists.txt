@@ -33,8 +33,6 @@ add_library(sysmonitor_lib STATIC
     src/collectors/process_collector.cpp
     src/collectors/network_collector.cpp
     src/storage/sqlite_storage.cpp
-    src/analysis/baseline_calculator.cpp
-    src/analysis/risk_scorer.cpp
     src/analyzer/baseline_manager.cpp
     src/analyzer/pattern_detector.cpp
     src/analyzer/explainer.cpp

@@ -10,16 +10,16 @@
 
 namespace sysmon {
 
-Analyzer::Analyzer(const std::string& db_path, double sigma_threshold, double ema_alpha)
+Analyzer::Analyzer(sqlite3* db, double sigma_threshold, double ema_alpha)
     : baselines_(std::min(ema_alpha * 3.0, 1.0), ema_alpha)
-    , timeline_(db_path)
+    , timeline_(db)
     , sigma_threshold_(sigma_threshold)
 {
     timeline_.initialize();
 }
 
 AnalysisReport Analyzer::analyze(const MetricSnapshot& snapshot) {
-    std::lock_guard<std::mutex> lock(analyze_mutex_);
+    // No mutex needed — this method is only called from the single analysis thread.
     AnalysisReport report;
 
     // Extract timestamp from any snapshot type

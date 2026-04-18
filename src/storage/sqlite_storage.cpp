@@ -176,7 +176,10 @@ void SqliteStorage::storeCpu(const CpuSnapshot& s) {
     sqlite3_bind_int64(stmt_insert_cpu_, 1, s.timestamp);
     sqlite3_bind_int(stmt_insert_cpu_, 2, -1);
     sqlite3_bind_double(stmt_insert_cpu_, 3, s.total_usage_percent);
-    sqlite3_step(stmt_insert_cpu_);
+    int rc = sqlite3_step(stmt_insert_cpu_);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("Failed to insert CPU aggregate: {}", sqlite3_errmsg(db_));
+    }
     sqlite3_reset(stmt_insert_cpu_);
 
     // Insert per-core
@@ -184,7 +187,10 @@ void SqliteStorage::storeCpu(const CpuSnapshot& s) {
         sqlite3_bind_int64(stmt_insert_cpu_, 1, s.timestamp);
         sqlite3_bind_int(stmt_insert_cpu_, 2, static_cast<int>(i));
         sqlite3_bind_double(stmt_insert_cpu_, 3, s.core_usage_percent[i]);
-        sqlite3_step(stmt_insert_cpu_);
+        rc = sqlite3_step(stmt_insert_cpu_);
+        if (rc != SQLITE_DONE) {
+            LOG_ERROR("Failed to insert CPU core {}: {}", i, sqlite3_errmsg(db_));
+        }
         sqlite3_reset(stmt_insert_cpu_);
     }
 }
@@ -195,7 +201,10 @@ void SqliteStorage::storeMemory(const MemorySnapshot& s) {
     sqlite3_bind_int64(stmt_insert_mem_, 3, static_cast<int64_t>(s.used_kb));
     sqlite3_bind_int64(stmt_insert_mem_, 4, static_cast<int64_t>(s.available_kb));
     sqlite3_bind_double(stmt_insert_mem_, 5, s.usage_percent);
-    sqlite3_step(stmt_insert_mem_);
+    int rc = sqlite3_step(stmt_insert_mem_);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("Failed to insert memory metric: {}", sqlite3_errmsg(db_));
+    }
     sqlite3_reset(stmt_insert_mem_);
 }
 
@@ -211,7 +220,10 @@ void SqliteStorage::storeProcess(const ProcessSnapshot& s) {
                           static_cast<int>(p.user.size()), SQLITE_TRANSIENT);
         sqlite3_bind_double(stmt_insert_proc_, 6, p.cpu_percent);
         sqlite3_bind_double(stmt_insert_proc_, 7, p.mem_percent);
-        sqlite3_step(stmt_insert_proc_);
+        int rc = sqlite3_step(stmt_insert_proc_);
+        if (rc != SQLITE_DONE) {
+            LOG_ERROR("Failed to insert process {}: {}", p.pid, sqlite3_errmsg(db_));
+        }
         sqlite3_reset(stmt_insert_proc_);
     }
 }
@@ -225,7 +237,10 @@ void SqliteStorage::storeNetwork(const NetworkSnapshot& s) {
         sqlite3_bind_int64(stmt_insert_net_, 4, static_cast<int64_t>(iface.tx_bytes));
         sqlite3_bind_double(stmt_insert_net_, 5, iface.rx_rate_kbps);
         sqlite3_bind_double(stmt_insert_net_, 6, iface.tx_rate_kbps);
-        sqlite3_step(stmt_insert_net_);
+        int rc = sqlite3_step(stmt_insert_net_);
+        if (rc != SQLITE_DONE) {
+            LOG_ERROR("Failed to insert network {}: {}", iface.name, sqlite3_errmsg(db_));
+        }
         sqlite3_reset(stmt_insert_net_);
     }
 }
@@ -239,7 +254,10 @@ void SqliteStorage::storeAnomaly(const AnomalyEvent& event) {
                       static_cast<int>(event.description.size()), SQLITE_TRANSIENT);
     sqlite3_bind_double(stmt_insert_anomaly_, 4, event.severity);
     sqlite3_bind_double(stmt_insert_anomaly_, 5, event.risk_score);
-    sqlite3_step(stmt_insert_anomaly_);
+    int rc = sqlite3_step(stmt_insert_anomaly_);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("Failed to insert anomaly: {}", sqlite3_errmsg(db_));
+    }
     sqlite3_reset(stmt_insert_anomaly_);
 }
 
