@@ -62,7 +62,7 @@ fi
 
 # ── Verify binaries exist ───────────────────────────────────────────────────
 MONITOR_BIN="${BUILD_DIR}/sysmonitor"
-DASHBOARD_BIN="${BUILD_DIR}/dashboard"
+DASHBOARD_BIN="${BUILD_DIR}/sysmonitor_dashboard"
 
 if [ "$RUN_MONITOR" = true ] && [ ! -f "$MONITOR_BIN" ]; then
     echo -e "${RED}✗ Monitor binary not found at ${MONITOR_BIN}${NC}"
